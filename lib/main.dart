@@ -207,21 +207,22 @@ class _VlmChatPageState extends State<VlmChatPage> {
   }
 
   Future<void> _pickModelFile() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.any,
+    // file_picker 12.x: pickFile() is the single-file call now (returns
+    // PlatformFile? directly), replacing the old pickFiles()/FilePickerResult
+    // pair from the 8.x line this was first written against.
+    final file = await FilePicker.pickFile(
       dialogTitle: 'Select the base model .gguf',
     );
-    final path = result?.files.single.path;
+    final path = file?.path;
     if (path == null) return;
     setState(() => _modelPath = path);
   }
 
   Future<void> _pickMmprojFile() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.any,
+    final file = await FilePicker.pickFile(
       dialogTitle: 'Select the mmproj .gguf',
     );
-    final path = result?.files.single.path;
+    final path = file?.path;
     if (path == null) return;
     setState(() => _mmprojPath = path);
   }

@@ -13,8 +13,8 @@ dependencies:
   flutter:
     sdk: flutter
   llama_cpp_dart: 0.9.0-dev.12
-  image_picker: ^1.1.2
-  file_picker: ^8.1.4
+  image_picker: ^1.2.3
+  file_picker: ^12.3.0
   # Ente's on-device OCR plugin (PaddleOCR v5 via ONNX): the box-overlay,
   # tap/swipe-to-select UI we actually want, proven working already.
   # Not on pub.dev yet, hence the git dependency.

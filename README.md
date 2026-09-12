@@ -1,24 +1,32 @@
 # vl_ocr
 
-Proof of concept: pick an image (e.g. a screenshot), run it through a local
-Qwen2.5-VL model via [`llama_cpp_dart`](https://pub.dev/packages/llama_cpp_dart)
-(llama.cpp's `mtmd` multimodal path), and get the text back. Everything runs
-on-device — no Google, no root, no cloud calls once the model files are
-loaded.
+Two OCR paths on one image, on-device, no Google/root/cloud calls once
+models are loaded:
+
+- **Primary screen**: Ente's [`mobile_ocr`](https://github.com/ente-io/mobile_ocr)
+  plugin's `TextDetectorWidget` — PaddleOCR v5 via ONNX, with the
+  box-overlay + tap/swipe-to-select UI reused as-is from Ente's own example
+  app. This is the good, proven UX; nothing here reimplements it.
+- **"Ask AI" screen**: the same image handed to a local Qwen2.5-VL model via
+  [`llama_cpp_dart`](https://pub.dev/packages/llama_cpp_dart) (llama.cpp's
+  `mtmd` path) for cases PaddleOCR can't handle — handwriting, unusual
+  layouts, "what does this mean" questions.
 
 Built to replace [Maid](https://github.com/Mobile-Artificial-Intelligence/maid)'s
-broken image-attach dialog for this specific use case.
+broken image-attach dialog for the VLM side specifically.
 
 ## Status
 
-Early PoC, untested end-to-end. The `mtmd`/Qwen2.5-VL vision pipeline itself
-is confirmed working (verified independently via a native `llama.cpp` build
-and `llama-mtmd-cli`, not through this app), but this Flutter app has not
-yet been built or run — see `lib/main.dart`'s top comment for the specific
-part of the `llama_cpp_dart` API that needs verifying first.
+The `mtmd`/Qwen2.5-VL vision pipeline is confirmed working, verified
+independently via a native `llama.cpp` build and `llama-mtmd-cli` before any
+of this app was written. The Flutter/`llama_cpp_dart` wiring itself was
+fixed once by CI catching a wrong transcribed type name (`LlamaChat` ->
+`EngineChat`) — see git log. The `mobile_ocr` integration is newer and
+hasn't been through a CI round yet.
 
 `llama_cpp_dart`'s multimodal support is only published on the `0.9.0-dev`
-prerelease track, not the stable `0.2.2` — expect API churn.
+prerelease track, not the stable `0.2.2` — expect API churn. `mobile_ocr`
+isn't on pub.dev yet either, hence the git dependency.
 
 ## Models
 

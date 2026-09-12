@@ -1,5 +1,12 @@
-// PoC: pick a screenshot, ask a local Qwen2.5-VL model (via llama_cpp_dart)
-// what it says. No network calls once the model files are loaded.
+// Primary flow: pick an image, get Ente's mobile_ocr box-overlay + tap/swipe
+// -to-select UI (PaddleOCR v5 via ONNX, fully on-device). That's the proven,
+// good UX -- reused as-is via the package's own TextDetectorWidget rather
+// than reimplemented.
+//
+// Secondary flow ("Ask AI"): hand the same image to a local Qwen2.5-VL model
+// via llama_cpp_dart for the cases PaddleOCR can't handle (handwriting,
+// unusual layouts, "what does this mean" questions). Separate screen, only
+// loads the (large) model on demand.
 //
 // LlamaEngine/EngineChat API verified against llama_cpp_dart 0.9.0-dev.12's
 // actual source (lib/src/isolate/engine.dart) after the first CI build
@@ -11,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:llama_cpp_dart/llama_cpp_dart.dart';
+import 'package:mobile_ocr/mobile_ocr.dart';
 
 void main() => runApp(const VlOcrApp());
 
@@ -22,21 +30,158 @@ class VlOcrApp extends StatelessWidget {
     return MaterialApp(
       title: 'VL OCR PoC',
       theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
-      home: const ChatPage(),
+      home: const OcrPage(),
     );
   }
 }
 
-class ChatPage extends StatefulWidget {
-  const ChatPage({super.key});
+/// Primary screen: Ente's box-overlay OCR, essentially their own example
+/// app's flow (see ente-io/mobile_ocr/example/lib/main.dart).
+class OcrPage extends StatefulWidget {
+  const OcrPage({super.key});
 
   @override
-  State<ChatPage> createState() => _ChatPageState();
+  State<OcrPage> createState() => _OcrPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _OcrPageState extends State<OcrPage> {
+  final ImagePicker _picker = ImagePicker();
+  final TextDetectorController _controller = TextDetectorController();
+  String? _imagePath;
+  bool _isPickingImage = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    setState(() => _isPickingImage = true);
+    try {
+      final file = await _picker.pickImage(source: source);
+      if (file == null) return;
+      if (!mounted) return;
+      setState(() => _imagePath = file.path);
+    } finally {
+      if (mounted) setState(() => _isPickingImage = false);
+    }
+  }
+
+  void _openVlmChat() {
+    final path = _imagePath;
+    if (path == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => VlmChatPage(initialImagePath: path)),
+    );
+  }
+
+  void _showSnackBar(String message) {
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final path = _imagePath;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('vl_ocr'),
+        actions: [
+          if (path != null)
+            IconButton(
+              tooltip: 'Ask AI (Qwen2.5-VL) about this image',
+              icon: const Icon(Icons.auto_awesome_outlined),
+              onPressed: _openVlmChat,
+            ),
+          if (path != null)
+            IconButton(
+              tooltip: 'Clear image',
+              icon: const Icon(Icons.close),
+              onPressed: () => setState(() => _imagePath = null),
+            ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: path == null
+                ? Center(
+                    child: Text(
+                      'Pick an image to run OCR',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  )
+                : Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      TextDetectorWidget(
+                        key: ValueKey(path),
+                        imagePath: path,
+                        backgroundColor: Colors.transparent,
+                        enableSelectionPreview: true,
+                        controller: _controller,
+                        onTextCopied: (text) => _showSnackBar(
+                          text.isEmpty
+                              ? 'Copied empty text'
+                              : 'Copied text (${text.length} chars)',
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _isPickingImage
+                          ? null
+                          : () => _pickImage(ImageSource.gallery),
+                      icon: const Icon(Icons.photo_library_outlined),
+                      label: const Text('Gallery'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _isPickingImage
+                          ? null
+                          : () => _pickImage(ImageSource.camera),
+                      icon: const Icon(Icons.camera_alt_outlined),
+                      label: const Text('Camera'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Secondary screen: local Qwen2.5-VL chat for images the fast PaddleOCR
+/// path can't handle well.
+class VlmChatPage extends StatefulWidget {
+  const VlmChatPage({super.key, this.initialImagePath});
+
+  final String? initialImagePath;
+
+  @override
+  State<VlmChatPage> createState() => _VlmChatPageState();
+}
+
+class _VlmChatPageState extends State<VlmChatPage> {
   final _service = _LlamaService();
-  final _promptController = TextEditingController(text: 'Read the text in this image, verbatim.');
+  final _promptController = TextEditingController(
+    text: 'Read the text in this image, verbatim.',
+  );
   final _scrollController = ScrollController();
 
   String? _modelPath;
@@ -46,6 +191,12 @@ class _ChatPageState extends State<ChatPage> {
   bool _busy = false;
   String _output = '';
   String _status = 'Pick model + mmproj files to begin.';
+
+  @override
+  void initState() {
+    super.initState();
+    _imagePath = widget.initialImagePath;
+  }
 
   @override
   void dispose() {
@@ -107,7 +258,10 @@ class _ChatPageState extends State<ChatPage> {
       _output = '';
     });
     try {
-      final stream = _service.ask(prompt: _promptController.text, imagePath: _imagePath!);
+      final stream = _service.ask(
+        prompt: _promptController.text,
+        imagePath: _imagePath!,
+      );
       await for (final token in stream) {
         setState(() => _output += token);
         _scrollController.animateTo(
@@ -126,7 +280,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('VL OCR PoC')),
+      appBar: AppBar(title: const Text('Ask AI (Qwen2.5-VL)')),
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -139,14 +293,25 @@ class _ChatPageState extends State<ChatPage> {
                 children: [
                   OutlinedButton(
                     onPressed: _busy ? null : _pickModelFile,
-                    child: Text(_modelPath == null ? 'Pick model .gguf' : 'Model: ${_shortName(_modelPath!)}'),
+                    child: Text(
+                      _modelPath == null
+                          ? 'Pick model .gguf'
+                          : 'Model: ${_shortName(_modelPath!)}',
+                    ),
                   ),
                   OutlinedButton(
                     onPressed: _busy ? null : _pickMmprojFile,
-                    child: Text(_mmprojPath == null ? 'Pick mmproj .gguf' : 'mmproj: ${_shortName(_mmprojPath!)}'),
+                    child: Text(
+                      _mmprojPath == null
+                          ? 'Pick mmproj .gguf'
+                          : 'mmproj: ${_shortName(_mmprojPath!)}',
+                    ),
                   ),
                   FilledButton(
-                    onPressed: (_busy || _modelPath == null || _mmprojPath == null) ? null : _loadModel,
+                    onPressed:
+                        (_busy || _modelPath == null || _mmprojPath == null)
+                        ? null
+                        : _loadModel,
                     child: const Text('Load model'),
                   ),
                 ],
@@ -174,7 +339,10 @@ class _ChatPageState extends State<ChatPage> {
               controller: _promptController,
               minLines: 1,
               maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Prompt', border: OutlineInputBorder()),
+              decoration: const InputDecoration(
+                labelText: 'Prompt',
+                border: OutlineInputBorder(),
+              ),
             ),
             const SizedBox(height: 8),
             Row(
@@ -187,8 +355,12 @@ class _ChatPageState extends State<ChatPage> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: FilledButton(
-                    onPressed: _modelReady && !_busy && _imagePath != null ? _send : null,
-                    child: _busy ? const CircularProgressIndicator() : const Text('Send'),
+                    onPressed: _modelReady && !_busy && _imagePath != null
+                        ? _send
+                        : null,
+                    child: _busy
+                        ? const CircularProgressIndicator()
+                        : const Text('Send'),
                   ),
                 ),
               ],
@@ -202,13 +374,15 @@ class _ChatPageState extends State<ChatPage> {
   String _shortName(String path) => path.split('/').last;
 }
 
-/// Thin wrapper around llama_cpp_dart so the API surface we're unsure about
-/// lives in one place.
+/// Thin wrapper around llama_cpp_dart so the API surface lives in one place.
 class _LlamaService {
   LlamaEngine? _engine;
   EngineChat? _chat;
 
-  Future<void> load({required String modelPath, required String mmprojPath}) async {
+  Future<void> load({
+    required String modelPath,
+    required String mmprojPath,
+  }) async {
     _engine = await LlamaEngine.spawn(
       modelParams: ModelParams(path: modelPath, gpuLayers: 0),
       contextParams: const ContextParams(nCtx: 4096),
@@ -217,7 +391,10 @@ class _LlamaService {
     _chat = await _engine!.createChat();
   }
 
-  Stream<String> ask({required String prompt, required String imagePath}) async* {
+  Stream<String> ask({
+    required String prompt,
+    required String imagePath,
+  }) async* {
     final chat = _chat;
     if (chat == null) throw StateError('Model not loaded');
     chat.addUser(prompt, media: [LlamaMedia.imageFile(imagePath)]);

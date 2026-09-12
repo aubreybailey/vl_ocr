@@ -40,6 +40,18 @@ jobs:
             flutter create --platforms=android --project-name vl_ocr .
           fi
 
+      # The generated template's default compileSdk/targetSdk (34, as of
+      # Flutter 3.47.4's `flutter create`) is behind what
+      # flutter_plugin_android_lifecycle (pulled in by image_picker) needs
+      # (36+) -- found by CI failing on `:file_picker:checkReleaseAarMetadata`.
+      # `flutter.compileSdkVersion`/`targetSdkVersion` are the template's own
+      # tracking variables, so overriding the literal is the fix rather than
+      # something that'll go stale on the next Flutter bump.
+      - name: Bump compileSdk/targetSdk past plugin requirements
+        run: |
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle
+          sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 36/' android/app/build.gradle
+
       - run: flutter pub get
       # llama_cpp_dart's .aar only ships arm64-v8a libs; building the other
       # ABIs just wastes time and prints "no libraries; won't contain

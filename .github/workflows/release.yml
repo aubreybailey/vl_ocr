@@ -49,8 +49,13 @@ jobs:
       # something that'll go stale on the next Flutter bump.
       - name: Bump compileSdk/targetSdk past plugin requirements
         run: |
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle
-          sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 36/' android/app/build.gradle
+          # Flutter 3.47.4's template generates Kotlin DSL (build.gradle.kts),
+          # not the older Groovy build.gradle -- found by CI failing to find
+          # the file this step assumed. Handle whichever shows up.
+          gradle_file=android/app/build.gradle
+          [ -f "$gradle_file" ] || gradle_file=android/app/build.gradle.kts
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' "$gradle_file"
+          sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 36/' "$gradle_file"
 
       - run: flutter pub get
       # llama_cpp_dart's .aar only ships arm64-v8a libs; building the other

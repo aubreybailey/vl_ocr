@@ -223,6 +223,7 @@ class _VlmChatPageState extends State<VlmChatPage> {
       final path = file?.path;
       if (path == null) return;
       setState(() => _modelPath = path);
+      _maybeAutoLoad();
     } finally {
       if (mounted) setState(() => _pickingFile = false);
     }
@@ -238,8 +239,17 @@ class _VlmChatPageState extends State<VlmChatPage> {
       final path = file?.path;
       if (path == null) return;
       setState(() => _mmprojPath = path);
+      _maybeAutoLoad();
     } finally {
       if (mounted) setState(() => _pickingFile = false);
+    }
+  }
+
+  // User feedback: having to tap "Load model" as a separate step after
+  // picking both files wasn't obvious -- once both paths are set, just go.
+  void _maybeAutoLoad() {
+    if (_modelPath != null && _mmprojPath != null && !_modelReady && !_busy) {
+      _loadModel();
     }
   }
 
@@ -418,9 +428,22 @@ class _LlamaService {
       // Qwen2.5-VL's vision path works on this hardware (--no-mmproj-offload
       // there); the default is useGpu:true, an untested config this app
       // has never actually verified.
+      //
+      // nThreads: MultimodalParams defaults this to 0 ("let the runtime
+      // pick" per its own doc comment), but MultimodalContext.init() passes
+      // it straight through as a literal override of
+      // mtmd_context_params_default()'s n_threads=4 -- native code never
+      // gets a chance to substitute a sane value for 0. Confirmed via a
+      // patched llama-mtmd-cli build that forcing n_threads=0 crashes hard
+      // (took down the whole shell, not a catchable exception) -- the
+      // mtmd_tokenize rc=2 this app hits is almost certainly this same
+      // zero-threads path, manifesting as a catchable exception here
+      // instead of a hard crash for whatever reason (different libc/build
+      // than the Termux spike, most likely).
       multimodalParams: MultimodalParams(
         mmprojPath: mmprojPath,
         useGpu: false,
+        nThreads: Platform.numberOfProcessors,
       ),
     );
     _chat = await _engine!.createChat();

@@ -355,13 +355,20 @@ class _VlmChatPageState extends State<VlmChatPage> {
                           : 'mmproj: ${_shortName(_mmprojPath!)}',
                     ),
                   ),
-                  FilledButton(
-                    onPressed:
-                        (_busy || _modelPath == null || _mmprojPath == null)
-                        ? null
-                        : _loadModel,
-                    child: const Text('Load model'),
-                  ),
+                  // Loading is automatic once both files are picked (see
+                  // _maybeAutoLoad) -- a permanent "Load model" button here
+                  // was confusing since it did nothing most of the time.
+                  // Only offer it as an explicit retry after a failure.
+                  if (_status.startsWith('Failed to load model'))
+                    FilledButton(
+                      onPressed:
+                          (_busy ||
+                              _modelPath == null ||
+                              _mmprojPath == null)
+                          ? null
+                          : _loadModel,
+                      child: const Text('Retry load'),
+                    ),
                 ],
               ),
               const SizedBox(height: 8),
@@ -488,6 +495,12 @@ class _LlamaService {
     if (template == null) return '(no embedded chat template on this model)';
     final content = '<__media__>\n$userPrompt';
     try {
+      // LlamaLibrary's loaded-bindings state is per-isolate, not actually
+      // process-wide despite the class doc comment -- LlamaEngine.spawn()
+      // only loads it inside the worker isolate it creates. Calling
+      // ChatTemplate.apply() from here (the main/UI isolate) needs its own
+      // load() first. Idempotent, so safe to call every time.
+      LlamaLibrary.load(path: LlamaLibrary.defaultFileName());
       return ChatTemplate.apply(
         template: template,
         messages: [ChatMessage(role: 'user', content: content)],

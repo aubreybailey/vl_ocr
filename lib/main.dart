@@ -251,9 +251,16 @@ class _VlmChatPageState extends State<VlmChatPage> {
     });
     try {
       await _service.load(modelPath: _modelPath!, mmprojPath: _mmprojPath!);
+      // mtmd_tokenize can return rc=2 ("preprocessing error" per our own
+      // error message) for two very different reasons: an actual native
+      // exception, OR simply ctx_v being null -- i.e. the vision encoder
+      // never initialized, even though the engine reported loading fine.
+      // Surface supportsVision so a failed "Ask AI" send tells us which.
       setState(() {
         _modelReady = true;
-        _status = 'Model loaded.';
+        _status = _service.supportsVision
+            ? 'Model loaded. Vision: yes.'
+            : 'Model loaded. Vision: NO -- image prompts will fail.';
       });
     } catch (e) {
       setState(() => _status = 'Failed to load model: $e');
@@ -398,6 +405,8 @@ class _LlamaService {
   LlamaEngine? _engine;
   EngineChat? _chat;
 
+  bool get supportsVision => _engine?.supportsVision ?? false;
+
   Future<void> load({
     required String modelPath,
     required String mmprojPath,
@@ -405,7 +414,14 @@ class _LlamaService {
     _engine = await LlamaEngine.spawn(
       modelParams: ModelParams(path: modelPath, gpuLayers: 0),
       contextParams: const ContextParams(nCtx: 4096),
-      multimodalParams: MultimodalParams(mmprojPath: mmprojPath),
+      // useGpu:false matches the native llama-mtmd-cli spike that proved
+      // Qwen2.5-VL's vision path works on this hardware (--no-mmproj-offload
+      // there); the default is useGpu:true, an untested config this app
+      // has never actually verified.
+      multimodalParams: MultimodalParams(
+        mmprojPath: mmprojPath,
+        useGpu: false,
+      ),
     );
     _chat = await _engine!.createChat();
   }

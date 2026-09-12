@@ -41,7 +41,10 @@ jobs:
           fi
 
       - run: flutter pub get
-      - run: flutter build apk --release
+      # llama_cpp_dart's .aar only ships arm64-v8a libs; building the other
+      # ABIs just wastes time and prints "no libraries; won't contain
+      # llama.cpp" warnings for targets we can't run on anyway.
+      - run: flutter build apk --release --target-platform android-arm64
 
       - name: Rename APK with tag
         run: |

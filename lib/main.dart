@@ -1,11 +1,9 @@
 // PoC: pick a screenshot, ask a local Qwen2.5-VL model (via llama_cpp_dart)
 // what it says. No network calls once the model files are loaded.
 //
-// NOTE: the exact LlamaEngine/Chat API below is transcribed from
-// llama_cpp_dart's published docs (0.9.0-dev series) but has not yet been
-// verified against the real package source in a build. Treat the contents
-// of _LlamaService as the first thing to fix if `flutter pub get` /
-// `flutter analyze` disagree with it.
+// LlamaEngine/EngineChat API verified against llama_cpp_dart 0.9.0-dev.12's
+// actual source (lib/src/isolate/engine.dart) after the first CI build
+// caught a wrong type name (LlamaChat -> EngineChat) transcribed from docs.
 import 'dart:async';
 import 'dart:io';
 
@@ -208,7 +206,7 @@ class _ChatPageState extends State<ChatPage> {
 /// lives in one place.
 class _LlamaService {
   LlamaEngine? _engine;
-  LlamaChat? _chat;
+  EngineChat? _chat;
 
   Future<void> load({required String modelPath, required String mmprojPath}) async {
     _engine = await LlamaEngine.spawn(

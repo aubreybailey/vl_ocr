@@ -6,6 +6,12 @@ on:
       - 'v*'
   workflow_dispatch: {}
 
+# Default GITHUB_TOKEN is read-only on this repo/org, which made
+# softprops/action-gh-release fail with 403 "Resource not accessible by
+# integration" -- needs explicit contents:write to create the release.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest

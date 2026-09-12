@@ -17,10 +17,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # No pinned flutter-version: llama_cpp_dart 0.9.0-dev requires Dart
+      # SDK ^3.10.0, which is newer than 3.27.0's bundled 3.6.0 (found by
+      # the first CI run failing here) -- track latest stable instead of
+      # re-pinning to another version that'll go stale the same way.
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.27.0'
 
       # native assets (needed by llama_cpp_dart's prebuilt-.so bundling) are
       # still experimental as of the Flutter version pinned above; if this

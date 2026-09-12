@@ -292,6 +292,18 @@ class _VlmChatPageState extends State<VlmChatPage> {
       _output = '';
     });
     try {
+      // Diagnostic: ChatTemplate.apply() uses llama.cpp's legacy
+      // llama_chat_apply_template() (pattern-matches known template
+      // families) rather than actually executing the model's embedded
+      // Jinja -- unconfirmed whether that renders this specific
+      // Qwen2.5-VL template correctly. Show the real rendered prompt so
+      // a failure tells us definitively instead of guessing again.
+      final rendered = _service.debugRenderPrompt(_promptController.text);
+      if (rendered != null) {
+        setState(
+          () => _output = '--- rendered prompt ---\n$rendered\n--- end ---\n\n',
+        );
+      }
       final stream = _service.ask(
         prompt: _promptController.text,
         imagePath: _imagePath!,
@@ -432,14 +444,14 @@ class _LlamaService {
       // nThreads: MultimodalParams defaults this to 0 ("let the runtime
       // pick" per its own doc comment), but MultimodalContext.init() passes
       // it straight through as a literal override of
-      // mtmd_context_params_default()'s n_threads=4 -- native code never
-      // gets a chance to substitute a sane value for 0. Confirmed via a
-      // patched llama-mtmd-cli build that forcing n_threads=0 crashes hard
-      // (took down the whole shell, not a catchable exception) -- the
-      // mtmd_tokenize rc=2 this app hits is almost certainly this same
-      // zero-threads path, manifesting as a catchable exception here
-      // instead of a hard crash for whatever reason (different libc/build
-      // than the Termux spike, most likely).
+      // mtmd_context_params_default()'s n_threads=4 with no substitution
+      // logic on either side. Worth keeping explicit regardless, but this
+      // was NOT the fix for the mtmd_tokenize rc=2 crash -- confirmed by a
+      // real device test after this change shipped, same crash, same
+      // trace. The terminal crash from a patched llama-mtmd-cli forcing
+      // n_threads=0 that seemed to confirm this was most likely an
+      // unrelated resource/OOM crash in that Termux session, not a
+      // controlled reproduction -- don't trust that as evidence.
       multimodalParams: MultimodalParams(
         mmprojPath: mmprojPath,
         useGpu: false,
@@ -458,6 +470,31 @@ class _LlamaService {
     chat.addUser(prompt, media: [LlamaMedia.imageFile(imagePath)]);
     await for (final event in chat.generate(maxTokens: 512)) {
       if (event is TokenEvent) yield event.text;
+    }
+  }
+
+  /// Renders the exact same prompt EngineChat.generate() would build
+  /// internally, using the same manual marker-prepend logic as
+  /// EngineChat.addUser(). ChatTemplate.apply() calls llama.cpp's legacy
+  /// llama_chat_apply_template() (pattern-matches known template families
+  /// like ChatML/Qwen) rather than executing the model's actual embedded
+  /// Jinja -- unconfirmed whether that's correct for Qwen2.5-VL's specific
+  /// template (namespace()-based image_count tracking, content-type
+  /// dispatch). This exposes the real rendered string so a failure shows
+  /// us definitively rather than guessing blind again.
+  String? debugRenderPrompt(String userPrompt) {
+    final engine = _engine;
+    final template = engine?.modelChatTemplate;
+    if (template == null) return '(no embedded chat template on this model)';
+    final content = '<__media__>\n$userPrompt';
+    try {
+      return ChatTemplate.apply(
+        template: template,
+        messages: [ChatMessage(role: 'user', content: content)],
+        addAssistant: true,
+      );
+    } catch (e) {
+      return '(debugRenderPrompt failed: $e)';
     }
   }
 

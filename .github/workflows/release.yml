@@ -73,6 +73,21 @@ jobs:
           sed -i '/<manifest /a\    <uses-permission android:name="android.permission.INTERNET"/>' \
             android/app/src/main/AndroidManifest.xml
 
+      # After the INTERNET fix let mobile_ocr's ONNX Runtime actually run,
+      # release builds crashed with "JNI DETECTED ERROR IN APPLICATION:
+      # java_class == null in call to GetMethodID ... OrtSession.run" --
+      # a SIGABRT tombstone, not a caught exception. This is documented
+      # ONNX Runtime behavior under R8 (github.com/microsoft/onnxruntime
+      # issue #17847): R8 strips the ai.onnxruntime.* Java classes that
+      # the native library looks up via JNI reflection unless kept.
+      - name: Keep ONNX Runtime classes from R8 (fixes native JNI crash)
+        run: |
+          echo '-keep class ai.onnxruntime.** { *; }' >> android/app/proguard-rules.pro
+          gradle_file=android/app/build.gradle
+          [ -f "$gradle_file" ] || gradle_file=android/app/build.gradle.kts
+          sed -i '/signingConfig = signingConfigs.getByName("debug")/a\            isMinifyEnabled = true\n            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")' \
+            "$gradle_file"
+
       - run: flutter pub get
       # llama_cpp_dart's .aar only ships arm64-v8a libs; building the other
       # ABIs just wastes time and prints "no libraries; won't contain

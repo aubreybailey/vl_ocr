@@ -63,6 +63,16 @@ jobs:
           sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' "$gradle_file"
           sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 36/' "$gradle_file"
 
+      # mobile_ocr downloads its PaddleOCR ONNX models over HTTPS on first
+      # use; without this the app doesn't crash, it just fails every
+      # detection with "SecurityException: Permission denied (missing
+      # INTERNET permission?)" deep in okhttp -- caught via logcat, not a
+      # build failure, so CI can't catch this one on its own.
+      - name: Add INTERNET permission for mobile_ocr's model download
+        run: |
+          sed -i '/<manifest /a\    <uses-permission android:name="android.permission.INTERNET"/>' \
+            android/app/src/main/AndroidManifest.xml
+
       - run: flutter pub get
       # llama_cpp_dart's .aar only ships arm64-v8a libs; building the other
       # ABIs just wastes time and prints "no libraries; won't contain

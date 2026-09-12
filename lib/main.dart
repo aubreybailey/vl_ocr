@@ -189,6 +189,10 @@ class _VlmChatPageState extends State<VlmChatPage> {
   String? _imagePath;
   bool _modelReady = false;
   bool _busy = false;
+  // Neither pick button disabled the other while a pick was in flight, so a
+  // fast second tap hit file_picker's single-active-picker limit and threw
+  // an uncaught PlatformException(already_active) -- caught via logcat.
+  bool _pickingFile = false;
   String _output = '';
   String _status = 'Pick model + mmproj files to begin.';
 
@@ -207,24 +211,36 @@ class _VlmChatPageState extends State<VlmChatPage> {
   }
 
   Future<void> _pickModelFile() async {
-    // file_picker 12.x: pickFile() is the single-file call now (returns
-    // PlatformFile? directly), replacing the old pickFiles()/FilePickerResult
-    // pair from the 8.x line this was first written against.
-    final file = await FilePicker.pickFile(
-      dialogTitle: 'Select the base model .gguf',
-    );
-    final path = file?.path;
-    if (path == null) return;
-    setState(() => _modelPath = path);
+    if (_pickingFile) return;
+    setState(() => _pickingFile = true);
+    try {
+      // file_picker 12.x: pickFile() is the single-file call now (returns
+      // PlatformFile? directly), replacing the old
+      // pickFiles()/FilePickerResult pair this was first written against.
+      final file = await FilePicker.pickFile(
+        dialogTitle: 'Select the base model .gguf',
+      );
+      final path = file?.path;
+      if (path == null) return;
+      setState(() => _modelPath = path);
+    } finally {
+      if (mounted) setState(() => _pickingFile = false);
+    }
   }
 
   Future<void> _pickMmprojFile() async {
-    final file = await FilePicker.pickFile(
-      dialogTitle: 'Select the mmproj .gguf',
-    );
-    final path = file?.path;
-    if (path == null) return;
-    setState(() => _mmprojPath = path);
+    if (_pickingFile) return;
+    setState(() => _pickingFile = true);
+    try {
+      final file = await FilePicker.pickFile(
+        dialogTitle: 'Select the mmproj .gguf',
+      );
+      final path = file?.path;
+      if (path == null) return;
+      setState(() => _mmprojPath = path);
+    } finally {
+      if (mounted) setState(() => _pickingFile = false);
+    }
   }
 
   Future<void> _loadModel() async {
@@ -293,7 +309,7 @@ class _VlmChatPageState extends State<VlmChatPage> {
                 runSpacing: 8,
                 children: [
                   OutlinedButton(
-                    onPressed: _busy ? null : _pickModelFile,
+                    onPressed: (_busy || _pickingFile) ? null : _pickModelFile,
                     child: Text(
                       _modelPath == null
                           ? 'Pick model .gguf'
@@ -301,7 +317,9 @@ class _VlmChatPageState extends State<VlmChatPage> {
                     ),
                   ),
                   OutlinedButton(
-                    onPressed: _busy ? null : _pickMmprojFile,
+                    onPressed: (_busy || _pickingFile)
+                        ? null
+                        : _pickMmprojFile,
                     child: Text(
                       _mmprojPath == null
                           ? 'Pick mmproj .gguf'

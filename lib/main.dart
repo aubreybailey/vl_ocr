@@ -13,6 +13,7 @@
 // caught a wrong type name (LlamaChat -> EngineChat) transcribed from docs.
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' show max, min;
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -55,21 +56,162 @@ class _OcrPageState extends State<OcrPage> {
   bool _isPickingImage = false;
   late final StreamSubscription<List<SharedMediaFile>> _shareSub;
 
+  // Barcodes/QR codes found in the currently-loaded static photo (separate
+  // from BarcodePage's live-camera scan). Static images only get one decode
+  // attempt each, same reliability concern tryHarder already fixed there.
+  static final _barcodeUrlPattern = RegExp(r'^https?://', caseSensitive: false);
+  List<Code> _barcodes = const [];
+
   @override
   void initState() {
     super.initState();
     // Warm start: app already running, image shared in from another app.
     _shareSub = ReceiveSharingIntent.instance.getMediaStream().listen((files) {
       if (files.isEmpty || !mounted) return;
-      setState(() => _imagePath = files.first.path);
+      _setImagePath(files.first.path);
     });
     // Cold start: app launched fresh via a share.
     ReceiveSharingIntent.instance.getInitialMedia().then((files) {
       if (files.isNotEmpty && mounted) {
-        setState(() => _imagePath = files.first.path);
+        _setImagePath(files.first.path);
       }
       ReceiveSharingIntent.instance.reset();
     });
+  }
+
+  void _setImagePath(String path) {
+    setState(() {
+      _imagePath = path;
+      _barcodes = const [];
+    });
+    _scanBarcodes(path);
+  }
+
+  Future<void> _scanBarcodes(String path) async {
+    try {
+      final codes = await zx.readBarcodesImagePath(
+        XFile(path),
+        DecodeParams(tryHarder: true, isMultiScan: true),
+      );
+      // The picture may have been cleared/replaced while this was running.
+      if (!mounted || _imagePath != path) return;
+      setState(() {
+        _barcodes = codes.codes
+            .where((c) => c.isValid && c.position != null)
+            .toList();
+      });
+    } catch (_) {
+      // Best-effort overlay; a decode failure shouldn't break the OCR flow.
+    }
+  }
+
+  /// Maps a barcode's position (in the source image's pixel space) to a
+  /// screen [Rect] within [containerSize], matching mobile_ocr's own
+  /// TextOverlayWidget BoxFit.contain letterbox math so the overlay lines up
+  /// with what TextDetectorWidget is actually displaying underneath.
+  Rect? _barcodeScreenRect(Code code, Size containerSize) {
+    final pos = code.position;
+    if (pos == null) return null;
+    final imageSize = Size(
+      pos.imageWidth.toDouble(),
+      pos.imageHeight.toDouble(),
+    );
+    if (imageSize.width <= 0 || imageSize.height <= 0) return null;
+
+    final fitted = applyBoxFit(BoxFit.contain, imageSize, containerSize);
+    final displaySize = fitted.destination;
+    final offsetX = (containerSize.width - displaySize.width) / 2;
+    final offsetY = (containerSize.height - displaySize.height) / 2;
+    final scaleX = displaySize.width / imageSize.width;
+    final scaleY = displaySize.height / imageSize.height;
+
+    final xs = [pos.topLeftX, pos.topRightX, pos.bottomLeftX, pos.bottomRightX];
+    final ys = [pos.topLeftY, pos.topRightY, pos.bottomLeftY, pos.bottomRightY];
+    final minX = xs.reduce(min).toDouble();
+    final maxX = xs.reduce(max).toDouble();
+    final minY = ys.reduce(min).toDouble();
+    final maxY = ys.reduce(max).toDouble();
+
+    // A little touch-target padding beyond the code's own quiet zone --
+    // ZXing's reported corners hug the symbol tightly, which is a tiny
+    // fingertip target otherwise.
+    const pad = 12.0;
+    return Rect.fromLTRB(
+      offsetX + minX * scaleX - pad,
+      offsetY + minY * scaleY - pad,
+      offsetX + maxX * scaleX + pad,
+      offsetY + maxY * scaleY + pad,
+    );
+  }
+
+  Future<void> _copyBarcodeText(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    _showSnackBar('Copied');
+  }
+
+  Future<void> _openBarcodeUrl(String url) async {
+    final ok = await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!ok && mounted) _showSnackBar('Could not open link');
+  }
+
+  void _showBarcodeResult(Code code) {
+    final text = code.text ?? '';
+    final isUrl = _barcodeUrlPattern.hasMatch(text);
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                code.format?.name ?? 'Barcode',
+                style: Theme.of(sheetContext).textTheme.labelMedium,
+              ),
+              const SizedBox(height: 4),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 160),
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    text,
+                    style: Theme.of(sheetContext).textTheme.titleMedium,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _copyBarcodeText(text),
+                      icon: const Icon(Icons.copy_outlined),
+                      label: const Text('Copy'),
+                    ),
+                  ),
+                  if (isUrl) ...[
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: () => _openBarcodeUrl(text),
+                        icon: const Icon(Icons.open_in_new),
+                        label: const Text('Open'),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -85,7 +227,7 @@ class _OcrPageState extends State<OcrPage> {
       final file = await _picker.pickImage(source: source);
       if (file == null) return;
       if (!mounted) return;
-      setState(() => _imagePath = file.path);
+      _setImagePath(file.path);
     } finally {
       if (mounted) setState(() => _isPickingImage = false);
     }
@@ -133,7 +275,10 @@ class _OcrPageState extends State<OcrPage> {
             IconButton(
               tooltip: 'Clear image',
               icon: const Icon(Icons.close),
-              onPressed: () => setState(() => _imagePath = null),
+              onPressed: () => setState(() {
+                _imagePath = null;
+                _barcodes = const [];
+              }),
             ),
         ],
       ),
@@ -162,6 +307,44 @@ class _OcrPageState extends State<OcrPage> {
                               : 'Copied text (${text.length} chars)',
                         ),
                       ),
+                      // Barcode/QR overlay: only covers the small rects
+                      // around detected codes, so taps everywhere else fall
+                      // straight through to TextDetectorWidget's own
+                      // selection gestures underneath.
+                      if (_barcodes.isNotEmpty)
+                        LayoutBuilder(
+                          builder: (context, constraints) => Stack(
+                            children: [
+                              for (final code in _barcodes)
+                                if (_barcodeScreenRect(
+                                      code,
+                                      constraints.biggest,
+                                    )
+                                    case final rect?)
+                                  Positioned.fromRect(
+                                    rect: rect,
+                                    child: GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () => _showBarcodeResult(code),
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          border: Border.all(
+                                            color: Colors.tealAccent,
+                                            width: 2,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            6,
+                                          ),
+                                          color: Colors.teal.withValues(
+                                            alpha: 0.12,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                            ],
+                          ),
+                        ),
                     ],
                   ),
           ),

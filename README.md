@@ -47,9 +47,22 @@ retries per second, but a gallery image only gets one decode attempt with
 no retry loop to fall back on. Set `tryHarder: true`; trades a little
 per-attempt speed for reliability, shouldn't affect barcodes since those
 already decode near-instantly either way. Not yet re-tested on-device.
-Current UX has this as a separate mode from the main OCR
-screen; candidate for merging into one unified camera view once the
-v0.2.0 live-overlay work exists, not before.
+
+**Barcode/QR detection on the main OCR screen: shipped.** Any photo loaded
+into the primary screen (gallery pick, camera capture, or Share-sheet) now
+also gets scanned for barcodes/QR codes (`zx.readBarcodesImagePath`,
+`tryHarder`+`isMultiScan`), independent of the separate live-camera
+`BarcodePage` above. Detected codes get a small tappable outline positioned
+directly over the code in the photo (mapped from ZXing's image-pixel
+coordinates into the displayed widget's BoxFit.contain letterbox rect, the
+same transform Ente's own `TextOverlayWidget` uses); tapping one opens a
+bottom sheet with the decoded text, Copy button, and Open button for
+`http(s)://` results. Coexists with `mobile_ocr`'s own text-selection UI
+underneath since the tap targets are only the small per-code rects, not a
+full-screen overlay. This is the "merge barcode into unified view" item
+from the roadmap below, done for static photos; the still-open v0.2.0
+milestone is specifically about a *live streaming camera* overlay, a
+separate and bigger piece of work.
 
 **"Ask AI" screen: known broken, pinned for now.** Every model tried
 (Qwen2.5-VL-3B, Gemma 3 4B, Qwen2-VL-2B) hits an identical

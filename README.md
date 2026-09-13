@@ -15,13 +15,21 @@ models are loaded:
 Built to replace [Maid](https://github.com/Mobile-Artificial-Intelligence/maid)'s
 broken image-attach dialog for the VLM side specifically. Also registers as
 a Share-sheet target for images (`ACTION_SEND`, `image/*`), so a screenshot
-can be shared straight in from any app.
+can be shared straight in from any app, and includes a barcode/QR scanner
+([`flutter_zxing`](https://pub.dev/packages/flutter_zxing), ZXing-cpp, no
+Google dependency).
 
 ## Status
 
 **OCR screen (`mobile_ocr`): working well**, confirmed on-device, including
 the Share-sheet path (share an image from any app, it opens straight into
 the box-overlay OCR view).
+
+**Barcode/QR scanner: shipped.** `flutter_zxing`'s built-in `ReaderWidget`
+(camera preview + decode loop, no custom camera code needed), reachable
+from a scanner icon on the OCR screen's app bar. Decoded text gets a Copy
+button, plus an Open button for `http(s)://` results. CI-verified only
+(builds clean, `CAMERA` permission present); not yet on-device tested.
 
 **"Ask AI" screen: known broken, pinned for now.** Every model tried
 (Qwen2.5-VL-3B, Gemma 3 4B, Qwen2-VL-2B) hits an identical
@@ -56,11 +64,12 @@ isn't on pub.dev yet either, hence the git dependency.
 
 ## Roadmap / ideas not yet started
 
+**v0.2.0 milestone: a working live camera + streaming text-box overlay**
+(see below) — the "big" remaining Lens-style feature.
+
 Other Google Lens-style features considered, roughly in order of how
 cheap/self-contained they'd be to add:
 
-- **Barcode/QR detection** — `flutter_zxing` (wraps ZXing-cpp, no Google
-  dependency), fully independent of the OCR pipeline. Easiest win.
 - **Document scan + perspective crop** — corner detection + perspective
   transform before handing off to OCR; pairs naturally with the existing
   camera capture flow.

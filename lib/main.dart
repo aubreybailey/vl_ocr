@@ -19,6 +19,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 import 'package:mobile_ocr/mobile_ocr.dart';
+import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 void main() => runApp(const VlOcrApp());
 
@@ -49,9 +50,28 @@ class _OcrPageState extends State<OcrPage> {
   final TextDetectorController _controller = TextDetectorController();
   String? _imagePath;
   bool _isPickingImage = false;
+  late final StreamSubscription<List<SharedMediaFile>> _shareSub;
+
+  @override
+  void initState() {
+    super.initState();
+    // Warm start: app already running, image shared in from another app.
+    _shareSub = ReceiveSharingIntent.instance.getMediaStream().listen((files) {
+      if (files.isEmpty || !mounted) return;
+      setState(() => _imagePath = files.first.path);
+    });
+    // Cold start: app launched fresh via a share.
+    ReceiveSharingIntent.instance.getInitialMedia().then((files) {
+      if (files.isNotEmpty && mounted) {
+        setState(() => _imagePath = files.first.path);
+      }
+      ReceiveSharingIntent.instance.reset();
+    });
+  }
 
   @override
   void dispose() {
+    _shareSub.cancel();
     _controller.dispose();
     super.dispose();
   }

@@ -73,6 +73,19 @@ jobs:
           sed -i '/<manifest /a\    <uses-permission android:name="android.permission.INTERNET"/>' \
             android/app/src/main/AndroidManifest.xml
 
+      # receive_sharing_intent needs an ACTION_SEND/image intent-filter to
+      # register vl_ocr as a Share-sheet target, plus singleTask (per the
+      # package's own README) instead of Flutter's default singleTop so a
+      # repeated share reuses the running activity rather than stacking a
+      # new instance.
+      - name: Register as a Share-sheet target for images
+        run: |
+          sed -i 's/android:launchMode="singleTop"/android:launchMode="singleTask"/' \
+            android/app/src/main/AndroidManifest.xml
+          sed -i '/<\/intent-filter>/a\
+            <intent-filter>\n                <action android:name="android.intent.action.SEND" />\n                <category android:name="android.intent.category.DEFAULT" />\n                <data android:mimeType="image/*" />\n            </intent-filter>' \
+            android/app/src/main/AndroidManifest.xml
+
       # Untested theory: mtmd_tokenize's rc=2 reproduces identically for
       # two unrelated model architectures (Qwen2.5-VL, Gemma 3) inside this
       # app, while both work fine as a native CLI process outside any

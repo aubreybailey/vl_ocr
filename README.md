@@ -13,16 +13,29 @@ models are loaded:
   layouts, "what does this mean" questions.
 
 Built to replace [Maid](https://github.com/Mobile-Artificial-Intelligence/maid)'s
-broken image-attach dialog for the VLM side specifically.
+broken image-attach dialog for the VLM side specifically. Also registers as
+a Share-sheet target for images (`ACTION_SEND`, `image/*`), so a screenshot
+can be shared straight in from any app.
 
 ## Status
 
-The `mtmd`/Qwen2.5-VL vision pipeline is confirmed working, verified
-independently via a native `llama.cpp` build and `llama-mtmd-cli` before any
-of this app was written. The Flutter/`llama_cpp_dart` wiring itself was
-fixed once by CI catching a wrong transcribed type name (`LlamaChat` ->
-`EngineChat`) — see git log. The `mobile_ocr` integration is newer and
-hasn't been through a CI round yet.
+**OCR screen (`mobile_ocr`): working well**, confirmed on-device.
+
+**"Ask AI" screen: known broken, pinned for now.** Every model tried
+(Qwen2.5-VL-3B, Gemma 3 4B, Qwen2-VL-2B) hits an identical
+`MultimodalException: mtmd_tokenize failed: rc=2 (preprocessing error)` the
+moment an image is sent — but every one of those same model+image
+combinations works flawlessly through a native `llama-mtmd-cli` build
+outside the Android app sandbox. Ruled out so far: image content/size,
+llama.cpp version (built at `llama_cpp_dart`'s exact pinned commit),
+rendered chat-template text (both correct and deliberately wrong versions
+tested), the AAR's actual build flags (`GGML_OPENMP=OFF`/`GGML_NATIVE=OFF`,
+matched and tested), `android:largeHeap`, and model size (down to 2B).
+The bug is real, reproducible, and isolated to something specific to
+running inside the Android app process — root cause not yet found. Next
+step under consideration: build a custom `.aar` with debug logging patched
+into `mtmd.cpp`'s exception path (`llama.cpp`'s own `LOG_ERR` doesn't reach
+Android logcat), via Android NDK in CI.
 
 `llama_cpp_dart`'s multimodal support is only published on the `0.9.0-dev`
 prerelease track, not the stable `0.2.2` — expect API churn. `mobile_ocr`

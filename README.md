@@ -41,15 +41,14 @@ Android logcat), via Android NDK in CI. Deliberately not filing this
 upstream — well-characterized enough to hand off if we ever decide to,
 but that's a call for a human to make, not something done autonomously.
 
-**In progress: NNAPI acceleration for the OCR path.** Ente's
-`mobile_ocr` runs ONNX Runtime with only `setOptimizationLevel(BASIC_OPT)`
-— no NNAPI/QNN/any hardware acceleration, pure CPU today. Forking it
-(`aubreybailey/mobile_ocr`) to add `SessionOptions.addNnapi()`. Cheap,
-reversible, no NDK required (it's a Java/Kotlin-level ONNX Runtime API,
-already bundled in the AAR they depend on) — but NNAPI driver quality
-varies a lot by OEM/SoC, so treat as "worth trying," not a guaranteed win.
-Needs on-device testing to confirm any actual speed/accuracy change; CI
-only proves it builds.
+**NNAPI acceleration for the OCR path: shipped and confirmed faster
+on-device.** Ente's `mobile_ocr` ran ONNX Runtime with only
+`setOptimizationLevel(BASIC_OPT)` — no NNAPI/QNN/any hardware
+acceleration, pure CPU. Forked (`aubreybailey/mobile_ocr`) to add
+`SessionOptions.addNnapi()` (Java/Kotlin-level ONNX Runtime API, no NDK
+needed, already bundled in the AAR). Noticeably snappier in real use on
+this device; NNAPI driver quality still varies by OEM/SoC, so this isn't
+guaranteed to hold on every device, but it's a confirmed win here.
 
 `llama_cpp_dart`'s multimodal support is only published on the `0.9.0-dev`
 prerelease track, not the stable `0.2.2` — expect API churn. `mobile_ocr`

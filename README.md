@@ -39,7 +39,15 @@ results. It auto-scans continuously (no capture button, by design) but
 originally gave no indication of that — just a live feed with a subtle
 corner-bracket target frame and nothing else, which read as broken.
 Fixed with an on-screen hint ("Point at a barcode or QR code — it scans
-automatically"). Current UX has this as a separate mode from the main OCR
+automatically"). 1D barcodes decode near-instantly; QR (especially dense
+ones like Matter pairing codes) was slow/unreliable live and failed
+outright from a gallery image. Root cause: `ReaderWidget`'s `tryHarder`
+defaults to `false` — camera scanning compensates by getting many cheap
+retries per second, but a gallery image only gets one decode attempt with
+no retry loop to fall back on. Set `tryHarder: true`; trades a little
+per-attempt speed for reliability, shouldn't affect barcodes since those
+already decode near-instantly either way. Not yet re-tested on-device.
+Current UX has this as a separate mode from the main OCR
 screen; candidate for merging into one unified camera view once the
 v0.2.0 live-overlay work exists, not before.
 

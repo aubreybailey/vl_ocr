@@ -611,6 +611,14 @@ class _BarcodePageState extends State<BarcodePage> {
                   scanDelay: const Duration(milliseconds: 500),
                   resolution: ResolutionPreset.high,
                   lensDirection: CameraLensDirection.back,
+                  // Defaults to false. User feedback: QR (esp. dense ones
+                  // like Matter pairing codes) was slow/unreliable live and
+                  // failed outright from a gallery image (which -- unlike
+                  // live camera -- only gets one decode attempt, no retry
+                  // loop to fall back on). tryHarder trades a bit of
+                  // per-attempt speed for reliability; barcodes already
+                  // decode near-instantly so shouldn't be hurt by it.
+                  tryHarder: true,
                   flashOnIcon: const Icon(Icons.flash_on),
                   flashOffIcon: const Icon(Icons.flash_off),
                   flashAlwaysIcon: const Icon(Icons.flash_on),

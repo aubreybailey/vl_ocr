@@ -47,12 +47,16 @@ jobs:
           fi
 
       # The generated template's default compileSdk/targetSdk (34, as of
-      # Flutter 3.47.4's `flutter create`) is behind what
-      # flutter_plugin_android_lifecycle (pulled in by image_picker) needs
-      # (36+) -- found by CI failing on `:file_picker:checkReleaseAarMetadata`.
-      # `flutter.compileSdkVersion`/`targetSdkVersion` are the template's own
-      # tracking variables, so overriding the literal is the fix rather than
-      # something that'll go stale on the next Flutter bump.
+      # Flutter 3.47.4's `flutter create`) is behind what plugins need --
+      # flutter_plugin_android_lifecycle wanted 36 (file_picker's AAR
+      # metadata check), receive_sharing_intent 1.9.0 wants 37 (found the
+      # same way, one plugin at a time). `flutter.compileSdkVersion`/
+      # `targetSdkVersion` are the template's own tracking variables, so
+      # overriding the literal is the fix rather than something that'll go
+      # stale on the next Flutter bump. AGP 9.1.0 (bundled with this
+      # Flutter version) only *recommends* up to 36 for compileSdk, but
+      # that's a warning, not a hard failure -- the actual build error was
+      # the AAR metadata check demanding 37, which this silences.
       - name: Bump compileSdk/targetSdk past plugin requirements
         run: |
           # Flutter 3.47.4's template generates Kotlin DSL (build.gradle.kts),
@@ -60,8 +64,8 @@ jobs:
           # the file this step assumed. Handle whichever shows up.
           gradle_file=android/app/build.gradle
           [ -f "$gradle_file" ] || gradle_file=android/app/build.gradle.kts
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' "$gradle_file"
-          sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 36/' "$gradle_file"
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 37/' "$gradle_file"
+          sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 37/' "$gradle_file"
 
       # mobile_ocr downloads its PaddleOCR ONNX models over HTTPS on first
       # use; without this the app doesn't crash, it just fails every

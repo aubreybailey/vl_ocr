@@ -21,15 +21,27 @@ Google dependency).
 
 ## Status
 
-**OCR screen (`mobile_ocr`): working well**, confirmed on-device, including
-the Share-sheet path (share an image from any app, it opens straight into
-the box-overlay OCR view).
+**OCR screen (`mobile_ocr`): working well**, confirmed on-device. The
+Share-sheet path works from Photos/Gallery and screenshots; sharing
+directly from the stock Camera app's own post-capture screen doesn't show
+us — confirmed via `dumpsys package` that our `ACTION_SEND`/`image/*`
+intent-filter is correctly registered at the OS level, so this isn't a bug
+on our end. Many camera apps show a small curated quick-share row instead
+of deferring to the full system share sheet; workaround is sharing from
+Gallery/Photos instead, or checking for a "More"/"See all" option on the
+Camera app's own share screen.
 
-**Barcode/QR scanner: shipped.** `flutter_zxing`'s built-in `ReaderWidget`
-(camera preview + decode loop, no custom camera code needed), reachable
-from a scanner icon on the OCR screen's app bar. Decoded text gets a Copy
-button, plus an Open button for `http(s)://` results. CI-verified only
-(builds clean, `CAMERA` permission present); not yet on-device tested.
+**Barcode/QR scanner: shipped, confirmed on-device.** `flutter_zxing`'s
+built-in `ReaderWidget` (camera preview + decode loop, no custom camera
+code needed), reachable from a scanner icon on the OCR screen's app bar.
+Decoded text gets a Copy button, plus an Open button for `http(s)://`
+results. It auto-scans continuously (no capture button, by design) but
+originally gave no indication of that — just a live feed with a subtle
+corner-bracket target frame and nothing else, which read as broken.
+Fixed with an on-screen hint ("Point at a barcode or QR code — it scans
+automatically"). Current UX has this as a separate mode from the main OCR
+screen; candidate for merging into one unified camera view once the
+v0.2.0 live-overlay work exists, not before.
 
 **"Ask AI" screen: known broken, pinned for now.** Every model tried
 (Qwen2.5-VL-3B, Gemma 3 4B, Qwen2-VL-2B) hits an identical

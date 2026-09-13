@@ -603,18 +603,51 @@ class _BarcodePageState extends State<BarcodePage> {
               onCopy: _copyToClipboard,
               onOpen: _openUrl,
             )
-          : ReaderWidget(
-              onScan: _onScanSuccess,
-              onScanFailure: (_) {},
-              scanDelay: const Duration(milliseconds: 500),
-              resolution: ResolutionPreset.high,
-              lensDirection: CameraLensDirection.back,
-              flashOnIcon: const Icon(Icons.flash_on),
-              flashOffIcon: const Icon(Icons.flash_off),
-              flashAlwaysIcon: const Icon(Icons.flash_on),
-              flashAutoIcon: const Icon(Icons.flash_auto),
-              galleryIcon: const Icon(Icons.photo_library),
-              toggleCameraIcon: const Icon(Icons.switch_camera),
+          : Stack(
+              children: [
+                ReaderWidget(
+                  onScan: _onScanSuccess,
+                  onScanFailure: (_) {},
+                  scanDelay: const Duration(milliseconds: 500),
+                  resolution: ResolutionPreset.high,
+                  lensDirection: CameraLensDirection.back,
+                  flashOnIcon: const Icon(Icons.flash_on),
+                  flashOffIcon: const Icon(Icons.flash_off),
+                  flashAlwaysIcon: const Icon(Icons.flash_on),
+                  flashAutoIcon: const Icon(Icons.flash_auto),
+                  galleryIcon: const Icon(Icons.photo_library),
+                  toggleCameraIcon: const Icon(Icons.switch_camera),
+                ),
+                // ReaderWidget auto-scans continuously (no capture button by
+                // design) but gave zero indication of that -- just a live
+                // camera feed with a subtle corner-bracket target frame and
+                // nothing else. User feedback: looked broken / like
+                // something was missing to tap. This is the fix: say what's
+                // happening and where to point.
+                Positioned(
+                  top: 24,
+                  left: 24,
+                  right: 24,
+                  child: IgnorePointer(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'Point at a barcode or QR code — it scans '
+                        'automatically, no need to tap anything',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
     );
   }

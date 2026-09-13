@@ -77,6 +77,14 @@ jobs:
           sed -i '/<manifest /a\    <uses-permission android:name="android.permission.INTERNET"/>' \
             android/app/src/main/AndroidManifest.xml
 
+      # flutter_zxing's own AndroidManifest.xml declares no permissions at
+      # all (checked directly) -- CAMERA is the consuming app's
+      # responsibility, same as any other Flutter camera plugin.
+      - name: Add CAMERA permission for barcode/QR scanning
+        run: |
+          sed -i '/<manifest /a\    <uses-permission android:name="android.permission.CAMERA"/>' \
+            android/app/src/main/AndroidManifest.xml
+
       # receive_sharing_intent needs an ACTION_SEND/image intent-filter to
       # register vl_ocr as a Share-sheet target, plus singleTask (per the
       # package's own README) instead of Flutter's default singleTop so a

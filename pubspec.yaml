@@ -6,8 +6,9 @@ publish_to: 'none'
 version: 0.1.0
 
 environment:
-  # llama_cpp_dart 0.9.0-dev requires Dart ^3.10.0.
-  sdk: '>=3.10.0 <4.0.0'
+  # llama_cpp_dart 0.9.0-dev requires Dart ^3.10.0; flutter_zxing 3.0.1
+  # raises the real floor to ^3.11.0.
+  sdk: '>=3.11.0 <4.0.0'
 
 dependencies:
   flutter:
@@ -19,6 +20,12 @@ dependencies:
   # image/*) so a screenshot can be shared straight in, matching the
   # original Lens/Translate-style workflow this was built for.
   receive_sharing_intent: ^1.9.0
+  # Barcode/QR scanning: wraps ZXing-cpp via Dart FFI, zero Google
+  # dependency (unlike ML Kit's barcode scanner). Ships a ready-made
+  # ReaderWidget (camera preview + decode loop) -- verified against the
+  # package's own example app source, not assumed from memory.
+  flutter_zxing: ^3.0.1
+  url_launcher: ^6.3.0
   # Ente's on-device OCR plugin (PaddleOCR v5 via ONNX): the box-overlay,
   # tap/swipe-to-select UI we actually want, proven working already.
   # Not on pub.dev yet, hence the git dependency.

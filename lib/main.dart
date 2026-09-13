@@ -20,6 +20,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 import 'package:mobile_ocr/mobile_ocr.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:flutter_zxing/flutter_zxing.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() => runApp(const VlOcrApp());
 
@@ -96,6 +99,12 @@ class _OcrPageState extends State<OcrPage> {
     );
   }
 
+  void _openBarcodeScanner() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const BarcodePage()));
+  }
+
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context)
       ..removeCurrentSnackBar()
@@ -109,6 +118,11 @@ class _OcrPageState extends State<OcrPage> {
       appBar: AppBar(
         title: const Text('vl_ocr'),
         actions: [
+          IconButton(
+            tooltip: 'Scan barcode / QR code',
+            icon: const Icon(Icons.qr_code_scanner_outlined),
+            onPressed: _openBarcodeScanner,
+          ),
           if (path != null)
             IconButton(
               tooltip: 'Ask AI (Qwen2.5-VL) about this image',
@@ -533,5 +547,139 @@ class _LlamaService {
 
   void dispose() {
     _engine?.dispose();
+  }
+}
+
+/// Barcode/QR scanning via flutter_zxing's ReaderWidget (camera preview +
+/// decode loop, built in -- no need to drive the camera ourselves). Wraps
+/// ZXing-cpp; zero Google dependency, unlike ML Kit's barcode scanner.
+class BarcodePage extends StatefulWidget {
+  const BarcodePage({super.key});
+
+  @override
+  State<BarcodePage> createState() => _BarcodePageState();
+}
+
+class _BarcodePageState extends State<BarcodePage> {
+  Code? _result;
+
+  static final _urlPattern = RegExp(r'^https?://', caseSensitive: false);
+
+  void _onScanSuccess(Code? code) {
+    if (code == null || !code.isValid) return;
+    setState(() => _result = code);
+  }
+
+  Future<void> _copyToClipboard(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  Future<void> _openUrl(String url) async {
+    final ok = await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context)
+        ..removeCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('Could not open link')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final result = _result;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Scan barcode / QR')),
+      body: result != null
+          ? _ResultView(
+              text: result.text ?? '',
+              isUrl: _urlPattern.hasMatch(result.text ?? ''),
+              onScanAgain: () => setState(() => _result = null),
+              onCopy: _copyToClipboard,
+              onOpen: _openUrl,
+            )
+          : ReaderWidget(
+              onScan: _onScanSuccess,
+              onScanFailure: (_) {},
+              scanDelay: const Duration(milliseconds: 500),
+              resolution: ResolutionPreset.high,
+              lensDirection: CameraLensDirection.back,
+              flashOnIcon: const Icon(Icons.flash_on),
+              flashOffIcon: const Icon(Icons.flash_off),
+              flashAlwaysIcon: const Icon(Icons.flash_on),
+              flashAutoIcon: const Icon(Icons.flash_auto),
+              galleryIcon: const Icon(Icons.photo_library),
+              toggleCameraIcon: const Icon(Icons.switch_camera),
+            ),
+    );
+  }
+}
+
+class _ResultView extends StatelessWidget {
+  const _ResultView({
+    required this.text,
+    required this.isUrl,
+    required this.onScanAgain,
+    required this.onCopy,
+    required this.onOpen,
+  });
+
+  final String text;
+  final bool isUrl;
+  final VoidCallback onScanAgain;
+  final void Function(String) onCopy;
+  final void Function(String) onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              child: SelectableText(
+                text,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => onCopy(text),
+                  icon: const Icon(Icons.copy_outlined),
+                  label: const Text('Copy'),
+                ),
+              ),
+              if (isUrl) ...[
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => onOpen(text),
+                    icon: const Icon(Icons.open_in_new),
+                    label: const Text('Open'),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: onScanAgain,
+            icon: const Icon(Icons.qr_code_scanner_outlined),
+            label: const Text('Scan again'),
+          ),
+        ],
+      ),
+    );
   }
 }

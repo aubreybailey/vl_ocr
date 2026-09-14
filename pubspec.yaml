@@ -25,6 +25,10 @@ dependencies:
   # ReaderWidget (camera preview + decode loop) -- verified against the
   # package's own example app source, not assumed from memory.
   flutter_zxing: ^3.0.1
+  # Already a transitive dep of flutter_zxing (which pins ^4.1.0); imported
+  # directly here to bake EXIF orientation before handing bytes to the
+  # decoder -- see the comment in _scanBarcodes.
+  image: ^4.1.0
   url_launcher: ^6.3.0
   # Ente's on-device OCR plugin (PaddleOCR v5 via ONNX): the box-overlay,
   # tap/swipe-to-select UI we actually want, proven working already.

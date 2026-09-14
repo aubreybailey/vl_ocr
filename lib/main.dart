@@ -23,6 +23,7 @@ import 'package:mobile_ocr/mobile_ocr.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_zxing/flutter_zxing.dart';
+import 'package:image/image.dart' as imglib;
 import 'package:url_launcher/url_launcher.dart';
 
 void main() => runApp(const VlOcrApp());
@@ -89,9 +90,30 @@ class _OcrPageState extends State<OcrPage> {
 
   Future<void> _scanBarcodes(String path) async {
     try {
-      final codes = await zx.readBarcodesImagePath(
-        XFile(path),
-        DecodeParams(tryHarder: true, isMultiScan: true),
+      // Not using zx.readBarcodesImagePath: it decodes via package:image's
+      // decodeImage, which leaves EXIF orientation as metadata rather than
+      // baking it into the pixel buffer. A portrait photo's raw sensor
+      // buffer is landscape, so the Position it reports back is in that
+      // unrotated frame -- while TextDetectorWidget displays (and this
+      // screen's overlay is positioned against) the correctly-rotated
+      // image. Boxes ended up geometrically offset from the actual code,
+      // which read as "tapping does nothing". Decode+bake+resize ourselves
+      // and feed raw bytes to zx.readBarcodes instead, using the same
+      // maxSize the convenience path applies by default.
+      final fileBytes = await File(path).readAsBytes();
+      final decoded = imglib.decodeImage(fileBytes);
+      if (decoded == null || !mounted || _imagePath != path) return;
+      final oriented = imglib.bakeOrientation(decoded);
+      final resized = resizeToMaxSize(oriented, 768);
+      final codes = zx.readBarcodes(
+        rgbBytes(resized),
+        DecodeParams(
+          imageFormat: ImageFormat.rgb,
+          width: resized.width,
+          height: resized.height,
+          tryHarder: true,
+          isMultiScan: true,
+        ),
       );
       // The picture may have been cleared/replaced while this was running.
       if (!mounted || _imagePath != path) return;

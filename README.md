@@ -64,6 +64,18 @@ from the roadmap below, done for static photos; the still-open v0.2.0
 milestone is specifically about a *live streaming camera* overlay, a
 separate and bigger piece of work.
 
+First on-device test found text detection working well but the barcode
+overlay untappable. Root cause: `flutter_zxing`'s convenience
+`readBarcodesImagePath` decodes via `package:image`, which leaves EXIF
+orientation as metadata instead of baking it into the pixel buffer --
+a portrait photo's raw sensor buffer is landscape, so the `Position` it
+reports back is in that unrotated frame while the photo is displayed (and
+the overlay is drawn) correctly rotated. The box ended up geometrically
+offset from the actual code. Fixed by decoding the file ourselves,
+calling `package:image`'s `bakeOrientation()`, then feeding the corrected
+raw bytes to `zx.readBarcodes` directly instead of the path-based
+convenience method. Not yet re-tested on-device.
+
 **"Ask AI" screen: known broken, pinned for now.** Every model tried
 (Qwen2.5-VL-3B, Gemma 3 4B, Qwen2-VL-2B) hits an identical
 `MultimodalException: mtmd_tokenize failed: rc=2 (preprocessing error)` the

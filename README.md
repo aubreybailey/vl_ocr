@@ -90,10 +90,21 @@ isn't detected at all -- two compounding causes, one fixed here: the
 convenience path's default 768px downscale can shrink a small code's
 modules below decodable well before crumpling becomes a factor, on a
 full-size 3000-4000px receipt photo where the code is a small fraction of
-the frame. Bumped to 2500px. Physical warping/creasing breaking the
-code's finder-pattern grid is a separate, harder problem this doesn't
-address -- ZXing does some perspective correction for a tilted-but-flat
-code, not true non-planar paper distortion. Not yet re-tested.
+the frame. Bumped to 2500px, still failed. Pulled the actual failing
+photo off-device via adb and measured it directly rather than guessing
+again: at this device's full 4096x3072 sensor resolution the printed QR
+was only ~400x400px, ~8-9px/module, and visually the code itself was
+sharp and only lightly creased at one edge -- not the "too warped to
+read" case it looked like. 2500px was already shrinking that to
+~5px/module, on the edge of surviving JPEG compression and camera noise.
+Raised the cap to 4096 (this device's own resolution, as a ceiling
+against a shared photo from some other phone's 100+MP sensor, not a
+target) since ZXing has no real performance reason to be scanned this
+small -- mobile_ocr's much heavier ONNX inference already runs fast on
+the same full-resolution photo. Not yet re-tested; genuine non-planar
+paper warping (folded hard enough to break the finder-pattern grid, as
+opposed to this receipt's light single crease) remains a separate, harder
+problem this doesn't address.
 
 **Multiple-image sharing: shipped, not yet re-tested on-device.** Added
 an `ACTION_SEND_MULTIPLE`/`image/*` manifest intent-filter alongside the

@@ -124,16 +124,23 @@ class _OcrPageState extends State<OcrPage> {
       // which read as "tapping does nothing". Decode+bake+resize ourselves
       // and feed raw bytes to zx.readBarcodes instead.
       //
-      // maxSize deliberately much higher than readBarcodesImagePath's
-      // default of 768: a receipt photo's QR is often a small fraction of
-      // a full 3000-4000px-wide frame, and downscaling the whole photo to
-      // 768px on its long side can shrink a small code's modules below
-      // what's decodable even before accounting for crumpled/warped paper.
+      // maxSize deliberately near-unbounded (well past readBarcodesImagePath's
+      // default of 768, and past this project's own earlier bump to 2500).
+      // Measured directly against a real crumpled-receipt photo that failed
+      // to decode: at this device's full 4096x3072 sensor resolution the
+      // printed QR itself was only ~400x400px, ~8-9px/module -- 2500 already
+      // shrank that to ~5px/module, on the edge of what survives JPEG
+      // compression and camera noise. mobile_ocr's much heavier ONNX
+      // inference already runs "pretty fast" on the same full-resolution
+      // photo, so there's no real performance reason to be this aggressive
+      // for a native decoder. Cap at this device's own resolution rather
+      // than truly unbounded, as a guard against a shared photo from some
+      // other phone's 100+MP sensor ballooning decode time/memory.
       final fileBytes = await File(path).readAsBytes();
       final decoded = imglib.decodeImage(fileBytes);
       if (decoded == null || !mounted || _imagePath != path) return;
       final oriented = imglib.bakeOrientation(decoded);
-      final resized = resizeToMaxSize(oriented, 2500);
+      final resized = resizeToMaxSize(oriented, 4096);
       final codes = zx.readBarcodes(
         rgbBytes(resized),
         DecodeParams(

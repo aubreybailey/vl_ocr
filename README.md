@@ -74,7 +74,16 @@ the overlay is drawn) correctly rotated. The box ended up geometrically
 offset from the actual code. Fixed by decoding the file ourselves,
 calling `package:image`'s `bakeOrientation()`, then feeding the corrected
 raw bytes to `zx.readBarcodes` directly instead of the path-based
-convenience method. Not yet re-tested on-device.
+convenience method. Confirmed on-device: a screenshot of a QR code now
+detects and taps correctly (fast). A QR on a crumpled paper receipt still
+isn't detected at all -- two compounding causes, one fixed here: the
+convenience path's default 768px downscale can shrink a small code's
+modules below decodable well before crumpling becomes a factor, on a
+full-size 3000-4000px receipt photo where the code is a small fraction of
+the frame. Bumped to 2500px. Physical warping/creasing breaking the
+code's finder-pattern grid is a separate, harder problem this doesn't
+address -- ZXing does some perspective correction for a tilted-but-flat
+code, not true non-planar paper distortion. Not yet re-tested.
 
 **"Ask AI" screen: known broken, pinned for now.** Every model tried
 (Qwen2.5-VL-3B, Gemma 3 4B, Qwen2-VL-2B) hits an identical

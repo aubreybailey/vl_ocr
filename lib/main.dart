@@ -98,13 +98,18 @@ class _OcrPageState extends State<OcrPage> {
       // screen's overlay is positioned against) the correctly-rotated
       // image. Boxes ended up geometrically offset from the actual code,
       // which read as "tapping does nothing". Decode+bake+resize ourselves
-      // and feed raw bytes to zx.readBarcodes instead, using the same
-      // maxSize the convenience path applies by default.
+      // and feed raw bytes to zx.readBarcodes instead.
+      //
+      // maxSize deliberately much higher than readBarcodesImagePath's
+      // default of 768: a receipt photo's QR is often a small fraction of
+      // a full 3000-4000px-wide frame, and downscaling the whole photo to
+      // 768px on its long side can shrink a small code's modules below
+      // what's decodable even before accounting for crumpled/warped paper.
       final fileBytes = await File(path).readAsBytes();
       final decoded = imglib.decodeImage(fileBytes);
       if (decoded == null || !mounted || _imagePath != path) return;
       final oriented = imglib.bakeOrientation(decoded);
-      final resized = resizeToMaxSize(oriented, 768);
+      final resized = resizeToMaxSize(oriented, 2500);
       final codes = zx.readBarcodes(
         rgbBytes(resized),
         DecodeParams(

@@ -58,32 +58,56 @@ class _OcrPageState extends State<OcrPage> {
   late final StreamSubscription<List<SharedMediaFile>> _shareSub;
 
   // Barcodes/QR codes found in the currently-loaded static photo (separate
-  // from BarcodePage's live-camera scan). Static images only get one decode
-  // attempt each, same reliability concern tryHarder already fixed there.
+  // from the live camera scan below). Static images only get one decode
+  // attempt each, same reliability concern tryHarder fixes for both.
   static final _barcodeUrlPattern = RegExp(r'^https?://', caseSensitive: false);
   List<Code> _barcodes = const [];
+
+  // Live camera scanning, merged into this screen instead of a separate
+  // BarcodePage route -- user feedback: "not sure i like having a separate
+  // barcode mode at the top". Toggled from the app bar; swaps the whole
+  // body rather than living inside the Stack above, since a static photo
+  // and a live camera preview aren't shown at once.
+  bool _liveMode = false;
+  // Guards against ReaderWidget's continuous scan loop trying to open a
+  // second bottom sheet on top of one already showing a live-scanned code.
+  bool _liveResultShowing = false;
 
   @override
   void initState() {
     super.initState();
-    // Warm start: app already running, image shared in from another app.
+    // Warm start: app already running, image(s) shared in from another app.
     _shareSub = ReceiveSharingIntent.instance.getMediaStream().listen((files) {
       if (files.isEmpty || !mounted) return;
-      _setImagePath(files.first.path);
+      _setSharedImages(files);
     });
     // Cold start: app launched fresh via a share.
     ReceiveSharingIntent.instance.getInitialMedia().then((files) {
       if (files.isNotEmpty && mounted) {
-        _setImagePath(files.first.path);
+        _setSharedImages(files);
       }
       ReceiveSharingIntent.instance.reset();
     });
+  }
+
+  // This screen works on one photo at a time, so an ACTION_SEND_MULTIPLE
+  // share (e.g. multi-select in Gallery) just loads the first image --
+  // matches how "Ask AI" and the barcode overlay already only ever reason
+  // about a single _imagePath. Told via a snackbar rather than silently
+  // dropping the rest, since picking "first" silently would read as the
+  // share having lost images.
+  void _setSharedImages(List<SharedMediaFile> files) {
+    _setImagePath(files.first.path);
+    if (files.length > 1) {
+      _showSnackBar('Shared ${files.length} images -- opened the first one');
+    }
   }
 
   void _setImagePath(String path) {
     setState(() {
       _imagePath = path;
       _barcodes = const [];
+      _liveMode = false;
     });
     _scanBarcodes(path);
   }
@@ -185,7 +209,16 @@ class _OcrPageState extends State<OcrPage> {
     if (!ok && mounted) _showSnackBar('Could not open link');
   }
 
-  void _showBarcodeResult(Code code) {
+  /// Handles a code from the live camera scanner. Reuses the same
+  /// bottom-sheet result UI as the static-photo overlay rather than
+  /// BarcodePage's now-deleted standalone copy.
+  void _onLiveScan(Code? code) {
+    if (code == null || !code.isValid || _liveResultShowing) return;
+    _liveResultShowing = true;
+    _showBarcodeResult(code, onDismissed: () => _liveResultShowing = false);
+  }
+
+  void _showBarcodeResult(Code code, {VoidCallback? onDismissed}) {
     final text = code.text ?? '';
     final isUrl = _barcodeUrlPattern.hasMatch(text);
     showModalBottomSheet<void>(
@@ -238,7 +271,7 @@ class _OcrPageState extends State<OcrPage> {
           ),
         ),
       ),
-    );
+    ).then((_) => onDismissed?.call());
   }
 
   @override
@@ -268,10 +301,11 @@ class _OcrPageState extends State<OcrPage> {
     );
   }
 
-  void _openBarcodeScanner() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const BarcodePage()));
+  void _toggleLiveMode() {
+    setState(() {
+      _liveMode = !_liveMode;
+      _liveResultShowing = false;
+    });
   }
 
   void _showSnackBar(String message) {
@@ -285,20 +319,26 @@ class _OcrPageState extends State<OcrPage> {
     final path = _imagePath;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('vl_ocr'),
+        title: Text(_liveMode ? 'Scan barcode / QR' : 'vl_ocr'),
         actions: [
           IconButton(
-            tooltip: 'Scan barcode / QR code',
-            icon: const Icon(Icons.qr_code_scanner_outlined),
-            onPressed: _openBarcodeScanner,
+            tooltip: _liveMode
+                ? 'Back to photo'
+                : 'Live barcode / QR scan',
+            icon: Icon(
+              _liveMode
+                  ? Icons.photo_outlined
+                  : Icons.qr_code_scanner_outlined,
+            ),
+            onPressed: _toggleLiveMode,
           ),
-          if (path != null)
+          if (!_liveMode && path != null)
             IconButton(
               tooltip: 'Ask AI (Qwen2.5-VL) about this image',
               icon: const Icon(Icons.auto_awesome_outlined),
               onPressed: _openVlmChat,
             ),
-          if (path != null)
+          if (!_liveMode && path != null)
             IconButton(
               tooltip: 'Clear image',
               icon: const Icon(Icons.close),
@@ -309,103 +349,164 @@ class _OcrPageState extends State<OcrPage> {
             ),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: path == null
-                ? Center(
-                    child: Text(
-                      'Pick an image to run OCR',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  )
-                : Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      TextDetectorWidget(
-                        key: ValueKey(path),
-                        imagePath: path,
-                        backgroundColor: Colors.transparent,
-                        enableSelectionPreview: true,
-                        controller: _controller,
-                        onTextCopied: (text) => _showSnackBar(
-                          text.isEmpty
-                              ? 'Copied empty text'
-                              : 'Copied text (${text.length} chars)',
-                        ),
+      body: _liveMode ? _buildLiveScanBody() : _buildPhotoBody(path),
+    );
+  }
+
+  Widget _buildPhotoBody(String? path) {
+    return Column(
+      children: [
+        Expanded(
+          child: path == null
+              ? Center(
+                  child: Text(
+                    'Pick an image to run OCR',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                )
+              : Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    TextDetectorWidget(
+                      key: ValueKey(path),
+                      imagePath: path,
+                      backgroundColor: Colors.transparent,
+                      enableSelectionPreview: true,
+                      controller: _controller,
+                      onTextCopied: (text) => _showSnackBar(
+                        text.isEmpty
+                            ? 'Copied empty text'
+                            : 'Copied text (${text.length} chars)',
                       ),
-                      // Barcode/QR overlay: only covers the small rects
-                      // around detected codes, so taps everywhere else fall
-                      // straight through to TextDetectorWidget's own
-                      // selection gestures underneath.
-                      if (_barcodes.isNotEmpty)
-                        LayoutBuilder(
-                          builder: (context, constraints) => Stack(
-                            children: [
-                              for (final code in _barcodes)
-                                if (_barcodeScreenRect(
-                                      code,
-                                      constraints.biggest,
-                                    )
-                                    case final rect?)
-                                  Positioned.fromRect(
-                                    rect: rect,
-                                    child: GestureDetector(
-                                      behavior: HitTestBehavior.opaque,
-                                      onTap: () => _showBarcodeResult(code),
-                                      child: Container(
-                                        decoration: BoxDecoration(
-                                          border: Border.all(
-                                            color: Colors.tealAccent,
-                                            width: 2,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            6,
-                                          ),
-                                          color: Colors.teal.withValues(
-                                            alpha: 0.12,
-                                          ),
+                    ),
+                    // Barcode/QR overlay: only covers the small rects
+                    // around detected codes, so taps everywhere else fall
+                    // straight through to TextDetectorWidget's own
+                    // selection gestures underneath.
+                    if (_barcodes.isNotEmpty)
+                      LayoutBuilder(
+                        builder: (context, constraints) => Stack(
+                          children: [
+                            for (final code in _barcodes)
+                              if (_barcodeScreenRect(
+                                    code,
+                                    constraints.biggest,
+                                  )
+                                  case final rect?)
+                                Positioned.fromRect(
+                                  rect: rect,
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: () => _showBarcodeResult(code),
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        border: Border.all(
+                                          color: Colors.tealAccent,
+                                          width: 2,
+                                        ),
+                                        borderRadius: BorderRadius.circular(
+                                          6,
+                                        ),
+                                        color: Colors.teal.withValues(
+                                          alpha: 0.12,
                                         ),
                                       ),
                                     ),
                                   ),
-                            ],
-                          ),
+                                ),
+                          ],
                         ),
-                    ],
+                      ),
+                  ],
+                ),
+        ),
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _isPickingImage
+                        ? null
+                        : () => _pickImage(ImageSource.gallery),
+                    icon: const Icon(Icons.photo_library_outlined),
+                    label: const Text('Gallery'),
                   ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _isPickingImage
+                        ? null
+                        : () => _pickImage(ImageSource.camera),
+                    icon: const Icon(Icons.camera_alt_outlined),
+                    label: const Text('Camera'),
+                  ),
+                ),
+              ],
+            ),
           ),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _isPickingImage
-                          ? null
-                          : () => _pickImage(ImageSource.gallery),
-                      icon: const Icon(Icons.photo_library_outlined),
-                      label: const Text('Gallery'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _isPickingImage
-                          ? null
-                          : () => _pickImage(ImageSource.camera),
-                      icon: const Icon(Icons.camera_alt_outlined),
-                      label: const Text('Camera'),
-                    ),
-                  ),
-                ],
+        ),
+      ],
+    );
+  }
+
+  // Live camera scanning, formerly the separate BarcodePage route --
+  // ReaderWidget already provides the camera preview + continuous decode
+  // loop, flash/gallery/switch-camera controls, no custom camera code
+  // needed here either.
+  Widget _buildLiveScanBody() {
+    return Stack(
+      children: [
+        ReaderWidget(
+          onScan: _onLiveScan,
+          onScanFailure: (_) {},
+          scanDelay: const Duration(milliseconds: 500),
+          resolution: ResolutionPreset.high,
+          lensDirection: CameraLensDirection.back,
+          // Defaults to false. User feedback (from when this lived in the
+          // now-deleted BarcodePage): QR, especially dense ones like
+          // Matter pairing codes, was slow/unreliable live. tryHarder
+          // trades a bit of per-attempt speed for reliability; barcodes
+          // already decode near-instantly so shouldn't be hurt by it.
+          tryHarder: true,
+          flashOnIcon: const Icon(Icons.flash_on),
+          flashOffIcon: const Icon(Icons.flash_off),
+          flashAlwaysIcon: const Icon(Icons.flash_on),
+          flashAutoIcon: const Icon(Icons.flash_auto),
+          galleryIcon: const Icon(Icons.photo_library),
+          toggleCameraIcon: const Icon(Icons.switch_camera),
+        ),
+        // ReaderWidget auto-scans continuously (no capture button by
+        // design) but gave zero indication of that on its own -- just a
+        // live camera feed with a subtle corner-bracket target frame and
+        // nothing else, which read as broken.
+        Positioned(
+          top: 24,
+          left: 24,
+          right: 24,
+          child: IgnorePointer(
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 10,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.6),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'Point at a barcode or QR code — it scans '
+                'automatically, no need to tap anything',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white),
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -757,180 +858,5 @@ class _LlamaService {
 
   void dispose() {
     _engine?.dispose();
-  }
-}
-
-/// Barcode/QR scanning via flutter_zxing's ReaderWidget (camera preview +
-/// decode loop, built in -- no need to drive the camera ourselves). Wraps
-/// ZXing-cpp; zero Google dependency, unlike ML Kit's barcode scanner.
-class BarcodePage extends StatefulWidget {
-  const BarcodePage({super.key});
-
-  @override
-  State<BarcodePage> createState() => _BarcodePageState();
-}
-
-class _BarcodePageState extends State<BarcodePage> {
-  Code? _result;
-
-  static final _urlPattern = RegExp(r'^https?://', caseSensitive: false);
-
-  void _onScanSuccess(Code? code) {
-    if (code == null || !code.isValid) return;
-    setState(() => _result = code);
-  }
-
-  Future<void> _copyToClipboard(String text) async {
-    await Clipboard.setData(ClipboardData(text: text));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..removeCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('Copied')));
-  }
-
-  Future<void> _openUrl(String url) async {
-    final ok = await launchUrl(
-      Uri.parse(url),
-      mode: LaunchMode.externalApplication,
-    );
-    if (!ok && mounted) {
-      ScaffoldMessenger.of(context)
-        ..removeCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('Could not open link')));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final result = _result;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Scan barcode / QR')),
-      body: result != null
-          ? _ResultView(
-              text: result.text ?? '',
-              isUrl: _urlPattern.hasMatch(result.text ?? ''),
-              onScanAgain: () => setState(() => _result = null),
-              onCopy: _copyToClipboard,
-              onOpen: _openUrl,
-            )
-          : Stack(
-              children: [
-                ReaderWidget(
-                  onScan: _onScanSuccess,
-                  onScanFailure: (_) {},
-                  scanDelay: const Duration(milliseconds: 500),
-                  resolution: ResolutionPreset.high,
-                  lensDirection: CameraLensDirection.back,
-                  // Defaults to false. User feedback: QR (esp. dense ones
-                  // like Matter pairing codes) was slow/unreliable live and
-                  // failed outright from a gallery image (which -- unlike
-                  // live camera -- only gets one decode attempt, no retry
-                  // loop to fall back on). tryHarder trades a bit of
-                  // per-attempt speed for reliability; barcodes already
-                  // decode near-instantly so shouldn't be hurt by it.
-                  tryHarder: true,
-                  flashOnIcon: const Icon(Icons.flash_on),
-                  flashOffIcon: const Icon(Icons.flash_off),
-                  flashAlwaysIcon: const Icon(Icons.flash_on),
-                  flashAutoIcon: const Icon(Icons.flash_auto),
-                  galleryIcon: const Icon(Icons.photo_library),
-                  toggleCameraIcon: const Icon(Icons.switch_camera),
-                ),
-                // ReaderWidget auto-scans continuously (no capture button by
-                // design) but gave zero indication of that -- just a live
-                // camera feed with a subtle corner-bracket target frame and
-                // nothing else. User feedback: looked broken / like
-                // something was missing to tap. This is the fix: say what's
-                // happening and where to point.
-                Positioned(
-                  top: 24,
-                  left: 24,
-                  right: 24,
-                  child: IgnorePointer(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 10,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.6),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Text(
-                        'Point at a barcode or QR code — it scans '
-                        'automatically, no need to tap anything',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-    );
-  }
-}
-
-class _ResultView extends StatelessWidget {
-  const _ResultView({
-    required this.text,
-    required this.isUrl,
-    required this.onScanAgain,
-    required this.onCopy,
-    required this.onOpen,
-  });
-
-  final String text;
-  final bool isUrl;
-  final VoidCallback onScanAgain;
-  final void Function(String) onCopy;
-  final void Function(String) onOpen;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              child: SelectableText(
-                text,
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => onCopy(text),
-                  icon: const Icon(Icons.copy_outlined),
-                  label: const Text('Copy'),
-                ),
-              ),
-              if (isUrl) ...[
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () => onOpen(text),
-                    icon: const Icon(Icons.open_in_new),
-                    label: const Text('Open'),
-                  ),
-                ),
-              ],
-            ],
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: onScanAgain,
-            icon: const Icon(Icons.qr_code_scanner_outlined),
-            label: const Text('Scan again'),
-          ),
-        ],
-      ),
-    );
   }
 }

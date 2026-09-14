@@ -14,10 +14,13 @@ models are loaded:
 
 Built to replace [Maid](https://github.com/Mobile-Artificial-Intelligence/maid)'s
 broken image-attach dialog for the VLM side specifically. Also registers as
-a Share-sheet target for images (`ACTION_SEND`, `image/*`), so a screenshot
-can be shared straight in from any app, and includes a barcode/QR scanner
+a Share-sheet target for images (`ACTION_SEND` and `ACTION_SEND_MULTIPLE`,
+`image/*`), so a screenshot can be shared straight in from any app, and
+includes barcode/QR scanning
 ([`flutter_zxing`](https://pub.dev/packages/flutter_zxing), ZXing-cpp, no
-Google dependency).
+Google dependency) merged into the same screen — a toggle in the app bar
+switches between the static photo view and a live camera scanner, no
+separate route.
 
 ## Status
 
@@ -31,11 +34,19 @@ of deferring to the full system share sheet; workaround is sharing from
 Gallery/Photos instead, or checking for a "More"/"See all" option on the
 Camera app's own share screen.
 
-**Barcode/QR scanner: shipped, confirmed on-device.** `flutter_zxing`'s
-built-in `ReaderWidget` (camera preview + decode loop, no custom camera
-code needed), reachable from a scanner icon on the OCR screen's app bar.
-Decoded text gets a Copy button, plus an Open button for `http(s)://`
-results. It auto-scans continuously (no capture button, by design) but
+**Barcode/QR scanning: shipped and merged into the main screen,
+confirmed on-device.** `flutter_zxing`'s built-in `ReaderWidget` (camera
+preview + decode loop, no custom camera code needed) now lives inline in
+`OcrPage` behind an app-bar toggle, instead of a separate `BarcodePage`
+route (deleted). User feedback: "not sure i like having a separate
+barcode mode at the top but we can merge after it works fully" — this is
+that merge, done once the static-photo path (below) was solid. Toggling
+swaps the whole screen body between the static-photo view and the live
+scanner (same Scaffold/app bar); a live-scanned code reuses the exact
+same bottom-sheet result UI (Copy, Open for `http(s)://`) as the
+static-photo overlay rather than a second copy of that logic. Decoded
+text gets a Copy button, plus an Open button for `http(s)://` results.
+Live scanning auto-scans continuously (no capture button, by design) but
 originally gave no indication of that — just a live feed with a subtle
 corner-bracket target frame and nothing else, which read as broken.
 Fixed with an on-screen hint ("Point at a barcode or QR code — it scans
@@ -46,23 +57,22 @@ defaults to `false` — camera scanning compensates by getting many cheap
 retries per second, but a gallery image only gets one decode attempt with
 no retry loop to fall back on. Set `tryHarder: true`; trades a little
 per-attempt speed for reliability, shouldn't affect barcodes since those
-already decode near-instantly either way. Not yet re-tested on-device.
+already decode near-instantly either way.
 
-**Barcode/QR detection on the main OCR screen: shipped.** Any photo loaded
-into the primary screen (gallery pick, camera capture, or Share-sheet) now
-also gets scanned for barcodes/QR codes (`zx.readBarcodesImagePath`,
-`tryHarder`+`isMultiScan`), independent of the separate live-camera
-`BarcodePage` above. Detected codes get a small tappable outline positioned
-directly over the code in the photo (mapped from ZXing's image-pixel
-coordinates into the displayed widget's BoxFit.contain letterbox rect, the
-same transform Ente's own `TextOverlayWidget` uses); tapping one opens a
-bottom sheet with the decoded text, Copy button, and Open button for
-`http(s)://` results. Coexists with `mobile_ocr`'s own text-selection UI
+**Barcode/QR detection on the static photo view: shipped.** Any photo
+loaded into the primary screen (gallery pick, camera capture, or
+Share-sheet) also gets scanned for barcodes/QR codes
+(`zx.readBarcodes`, `tryHarder`+`isMultiScan`). Detected codes get a
+small tappable outline positioned directly over the code in the photo
+(mapped from ZXing's image-pixel coordinates into the displayed widget's
+BoxFit.contain letterbox rect, the same transform Ente's own
+`TextOverlayWidget` uses); tapping one opens the same bottom sheet the
+live scanner uses. Coexists with `mobile_ocr`'s own text-selection UI
 underneath since the tap targets are only the small per-code rects, not a
-full-screen overlay. This is the "merge barcode into unified view" item
-from the roadmap below, done for static photos; the still-open v0.2.0
-milestone is specifically about a *live streaming camera* overlay, a
-separate and bigger piece of work.
+full-screen overlay. The still-open v0.2.0 milestone is specifically
+about a *streaming box overlay while the live camera is running*
+(drawing boxes over codes/text before you tap anything) — a separate,
+bigger piece of work than either of the above.
 
 First on-device test found text detection working well but the barcode
 overlay untappable. Root cause: `flutter_zxing`'s convenience
@@ -84,6 +94,18 @@ the frame. Bumped to 2500px. Physical warping/creasing breaking the
 code's finder-pattern grid is a separate, harder problem this doesn't
 address -- ZXing does some perspective correction for a tilted-but-flat
 code, not true non-planar paper distortion. Not yet re-tested.
+
+**Multiple-image sharing: shipped, not yet re-tested on-device.** Added
+an `ACTION_SEND_MULTIPLE`/`image/*` manifest intent-filter alongside the
+existing single-image `ACTION_SEND` one, so vl_ocr shows up in the share
+sheet for a Gallery multi-select too (previously it would've been hidden
+from that share sheet entirely, since Android only offers a target app
+for the specific action its intent-filters declare). `receive_sharing_intent`'s
+`getMediaStream()`/`getInitialMedia()` already return a `List` regardless
+of which action fired, so no API change was needed there -- this screen
+still only reasons about one photo at a time, so it opens the first image
+and tells you via a snackbar ("Shared N images -- opened the first one")
+rather than silently dropping the rest.
 
 **"Ask AI" screen: known broken, pinned for now.** Every model tried
 (Qwen2.5-VL-3B, Gemma 3 4B, Qwen2-VL-2B) hits an identical

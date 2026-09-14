@@ -85,17 +85,23 @@ jobs:
           sed -i '/<manifest /a\    <uses-permission android:name="android.permission.CAMERA"/>' \
             android/app/src/main/AndroidManifest.xml
 
-      # receive_sharing_intent needs an ACTION_SEND/image intent-filter to
-      # register vl_ocr as a Share-sheet target, plus singleTask (per the
-      # package's own README) instead of Flutter's default singleTop so a
-      # repeated share reuses the running activity rather than stacking a
-      # new instance.
-      - name: Register as a Share-sheet target for images
+      # receive_sharing_intent needs ACTION_SEND (single image) and
+      # ACTION_SEND_MULTIPLE (several at once, e.g. multi-select in Gallery)
+      # intent-filters to register vl_ocr as a Share-sheet target for both,
+      # plus singleTask (per the package's own README) instead of Flutter's
+      # default singleTop so a repeated share reuses the running activity
+      # rather than stacking a new instance. Both filters are inserted in
+      # one sed pass since the freshly-generated manifest only has a single
+      # pre-existing </intent-filter> (the launcher one) to anchor on --
+      # running this same match twice in separate steps would insert each
+      # block after every filter already added by the previous step,
+      # duplicating them.
+      - name: Register as a Share-sheet target for images (single + multiple)
         run: |
           sed -i 's/android:launchMode="singleTop"/android:launchMode="singleTask"/' \
             android/app/src/main/AndroidManifest.xml
           sed -i '/<\/intent-filter>/a\
-            <intent-filter>\n                <action android:name="android.intent.action.SEND" />\n                <category android:name="android.intent.category.DEFAULT" />\n                <data android:mimeType="image/*" />\n            </intent-filter>' \
+            <intent-filter>\n                <action android:name="android.intent.action.SEND" />\n                <category android:name="android.intent.category.DEFAULT" />\n                <data android:mimeType="image/*" />\n            </intent-filter>\n            <intent-filter>\n                <action android:name="android.intent.action.SEND_MULTIPLE" />\n                <category android:name="android.intent.category.DEFAULT" />\n                <data android:mimeType="image/*" />\n            </intent-filter>' \
             android/app/src/main/AndroidManifest.xml
 
       # Untested theory: mtmd_tokenize's rc=2 reproduces identically for

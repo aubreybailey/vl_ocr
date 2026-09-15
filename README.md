@@ -1,29 +1,59 @@
 # vl_ocr
 
-Two OCR paths on one image, on-device, no Google/root/cloud calls once
-models are loaded:
+On-device, no Google/root/cloud calls once models are loaded. The app opens
+straight into a **live camera view** (Lens-style): barcodes/QR codes decode
+continuously in the background
+([`flutter_zxing`](https://pub.dev/packages/flutter_zxing), ZXing-cpp, no
+Google dependency), and amber boxes appear over detected text. From there:
 
-- **Primary screen**: Ente's [`mobile_ocr`](https://github.com/ente-io/mobile_ocr)
-  plugin's `TextDetectorWidget` — PaddleOCR v5 via ONNX, with the
-  box-overlay + tap/swipe-to-select UI reused as-is from Ente's own example
-  app. This is the good, proven UX; nothing here reimplements it.
-- **"Ask AI" screen**: the same image handed to a local Qwen2.5-VL model via
-  [`llama_cpp_dart`](https://pub.dev/packages/llama_cpp_dart) (llama.cpp's
-  `mtmd` path) for cases PaddleOCR can't handle — handwriting, unusual
-  layouts, "what does this mean" questions.
+- **Tap a text box, tap the snapshot button, or pick from Gallery** to
+  freeze on a photo and enter **photo/analysis mode** — Ente's
+  [`mobile_ocr`](https://github.com/ente-io/mobile_ocr) plugin's
+  `TextDetectorWidget` (PaddleOCR v5 via ONNX) takes over with its
+  box-overlay + tap/swipe-to-select UI, reused as-is from Ente's own example
+  app, plus a tappable overlay for any barcode/QR codes in that same photo.
+- **"Ask AI"**, only once a photo is loaded: hands that image to a local
+  Qwen2.5-VL model via [`llama_cpp_dart`](https://pub.dev/packages/llama_cpp_dart)
+  (llama.cpp's `mtmd` path) for cases PaddleOCR can't handle — handwriting,
+  unusual layouts, "what does this mean" questions.
 
 Built to replace [Maid](https://github.com/Mobile-Artificial-Intelligence/maid)'s
 broken image-attach dialog for the VLM side specifically. Also registers as
 a Share-sheet target for images (`ACTION_SEND` and `ACTION_SEND_MULTIPLE`,
-`image/*`), so a screenshot can be shared straight in from any app, and
-includes barcode/QR scanning
-([`flutter_zxing`](https://pub.dev/packages/flutter_zxing), ZXing-cpp, no
-Google dependency) merged into the same screen — a toggle in the app bar
-switches between the static photo view and a live camera scanner, no
-separate route. The live scanner also draws boxes over detected text in
-real time (Lens-style), tap one to freeze and read it.
+`image/*`), so a screenshot can be shared straight in from any app — that,
+too, drops straight into photo/analysis mode.
 
 ## Status
+
+**Live camera is now the home screen, shipped.** Previously the app
+opened on a static "Pick an image" placeholder with Gallery/Camera
+buttons, and live scanning was a separate mode behind an app-bar toggle
+(`_liveMode`). User feedback: "let's change the order of operations to
+start in live mode and have a snapshot button to take the photo and
+freeze the analysis... the Ask AI button won't appear at all until the
+post-gallery/post-snapshot phase." Reworked so which view shows is
+derived purely from whether a photo is loaded (`_imagePath == null` ->
+live camera, non-null -> photo/analysis) instead of a separate mode flag
+that had to be kept in lockstep with it — the app-bar toggle is gone
+entirely, since there's no second mode to toggle into anymore. Two ways
+to enter photo/analysis mode from the live view, in a bottom action bar
+over the camera preview: a shutter-style **snapshot button** (calls
+`takePicture()` on the same live `CameraController` the auto text-scan
+cycle already uses, guarded by the same in-flight flag so the two can
+never fire concurrent captures) or a **Gallery icon** next to it (plain
+`image_picker` pick, same as before). Sharing an image in from another
+app keeps working unchanged — already an equivalent "load a static
+image" entry point. `ReaderWidget`'s own built-in gallery button is
+turned off (`showGallery: false`) since it only ran its own
+barcode-only pick-and-decode flow, not this app's full OCR pipeline; its
+flash/switch-camera buttons moved to `centerRight` to stay clear of both
+the hint banner (top) and the new bottom bar. Ask AI (and the Clear
+button) now only ever render once `_imagePath != null`, which falls out
+of the same single check rather than needing separate handling. Camera
+permission denial (now something a user can hit immediately on first
+launch, since live view is the default rather than something opted
+into) falls back to a plain message plus a Gallery button rather than a
+blank screen. Not yet tested on-device.
 
 **OCR screen (`mobile_ocr`): working well**, confirmed on-device. The
 Share-sheet path works from Photos/Gallery and screenshots; sharing

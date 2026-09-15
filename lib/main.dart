@@ -73,12 +73,26 @@ class _OcrPageState extends State<OcrPage> {
   static final _barcodeUrlPattern = RegExp(r'^https?://', caseSensitive: false);
   List<Code> _barcodes = const [];
 
-  // Live camera scanning, merged into this screen instead of a separate
-  // BarcodePage route -- user feedback: "not sure i like having a separate
-  // barcode mode at the top". Toggled from the app bar; swaps the whole
-  // body rather than living inside the Stack above, since a static photo
-  // and a live camera preview aren't shown at once.
-  bool _liveMode = false;
+  // Live camera view is now the app's home state rather than a toggled
+  // mode: whether we're showing it or the static-photo/analysis view is
+  // derived purely from _imagePath (null -> live, non-null -> photo)
+  // instead of a separate bool that had to be kept in lockstep with it.
+  // User feedback: "let's change the order of operations to start in live
+  // mode and have a snapshot button to take the photo and freeze the
+  // analysis... the Ask AI button won't appear at all until the
+  // post-gallery/post-snapshot phase" -- both fall out for free once
+  // there's only one source of truth for which view is showing.
+  //
+  // Reference to the live camera controller ReaderWidget creates
+  // internally, captured via onControllerCreated purely so the manual
+  // snapshot button can call takePicture() on the same controller the
+  // auto text-scan cycle already uses, rather than standing up a second
+  // camera resource.
+  CameraController? _liveController;
+  // Set when onControllerCreated reports a non-null error (e.g. camera
+  // permission denied) so the live view can fall back to a plain message
+  // + Gallery button instead of a blank/broken screen.
+  Exception? _liveCameraError;
   // Guards against ReaderWidget's continuous scan loop trying to open a
   // second bottom sheet on top of one already showing a live-scanned code.
   bool _liveResultShowing = false;
@@ -153,7 +167,6 @@ class _OcrPageState extends State<OcrPage> {
     setState(() {
       _imagePath = path;
       _barcodes = const [];
-      _liveMode = false;
       _stopLiveTextScan();
     });
     _scanBarcodes(path);
@@ -272,9 +285,19 @@ class _OcrPageState extends State<OcrPage> {
     _showBarcodeResult(code, onDismissed: () => _liveResultShowing = false);
   }
 
-  void _onLiveCameraController(CameraController? controller, Exception? _) {
+  void _onLiveCameraController(CameraController? controller, Exception? error) {
     _textScanTimer?.cancel();
-    if (controller == null) return;
+    _liveController = controller;
+    _liveResultShowing = false;
+    if (controller == null) {
+      // Camera permission denied, or the controller otherwise failed to
+      // initialize -- surface a fallback instead of a blank live view.
+      if (mounted) setState(() => _liveCameraError = error);
+      return;
+    }
+    if (_liveCameraError != null && mounted) {
+      setState(() => _liveCameraError = null);
+    }
     // Best-effort: warms mobile_ocr's model cache so the first detection
     // cycle isn't silently stuck behind a first-run download with no
     // feedback. Ignored on failure -- detectTextRegions() below will just
@@ -291,16 +314,16 @@ class _OcrPageState extends State<OcrPage> {
   }
 
   Future<void> _runTextScanCycle(CameraController controller) async {
-    if (_textScanInFlight || !_liveMode || !mounted) return;
+    if (_textScanInFlight || _imagePath != null || !mounted) return;
     if (!controller.value.isInitialized) return;
     _textScanInFlight = true;
     try {
       final xfile = await controller.takePicture();
-      if (!mounted || !_liveMode) return;
+      if (!mounted || _imagePath != null) return;
       final result = await MobileOcr().detectTextRegions(
         imagePath: xfile.path,
       );
-      if (!mounted || !_liveMode) return;
+      if (!mounted || _imagePath != null) return;
       setState(() {
         _updateTrackedTextRegions(result.regions);
         _liveTextRegionsImageSize = result.imageSize;
@@ -317,9 +340,31 @@ class _OcrPageState extends State<OcrPage> {
     }
   }
 
+  /// Manual snapshot button: takes a still on the same controller the auto
+  /// text-scan cycle uses (guarded by the same _textScanInFlight flag so
+  /// the two can't fire concurrent takePicture() calls) and freezes
+  /// straight into photo/analysis mode via the same entry point a tapped
+  /// live text-region box or a gallery pick already uses.
+  Future<void> _takeSnapshot() async {
+    final controller = _liveController;
+    if (controller == null || _textScanInFlight) return;
+    if (!controller.value.isInitialized) return;
+    _textScanInFlight = true;
+    try {
+      final xfile = await controller.takePicture();
+      if (!mounted) return;
+      _setImagePath(xfile.path);
+    } catch (_) {
+      if (mounted) _showSnackBar('Could not capture photo');
+    } finally {
+      _textScanInFlight = false;
+    }
+  }
+
   void _stopLiveTextScan() {
     _textScanTimer?.cancel();
     _textScanTimer = null;
+    _liveController = null;
     _trackedTextRegions = [];
     _liveTextRegionsImageSize = null;
     _liveTextRegionsImagePath = null;
@@ -492,45 +537,30 @@ class _OcrPageState extends State<OcrPage> {
     );
   }
 
-  void _toggleLiveMode() {
-    setState(() {
-      _liveMode = !_liveMode;
-      _liveResultShowing = false;
-      if (!_liveMode) _stopLiveTextScan();
-    });
-  }
-
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context)
       ..removeCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
+  // Which view is showing is derived from _imagePath alone (null -> live
+  // camera, non-null -> photo/analysis) rather than a separate mode flag --
+  // see the comment on _liveController for why. Ask AI and Clear only ever
+  // apply once there's a photo, so they fall out of the same check.
   @override
   Widget build(BuildContext context) {
     final path = _imagePath;
     return Scaffold(
       appBar: AppBar(
-        title: Text(_liveMode ? 'Scan barcode / QR' : 'vl_ocr'),
+        title: Text(path == null ? 'vl_ocr — live scan' : 'vl_ocr'),
         actions: [
-          IconButton(
-            tooltip: _liveMode
-                ? 'Back to photo'
-                : 'Live barcode / QR scan',
-            icon: Icon(
-              _liveMode
-                  ? Icons.photo_outlined
-                  : Icons.qr_code_scanner_outlined,
-            ),
-            onPressed: _toggleLiveMode,
-          ),
-          if (!_liveMode && path != null)
+          if (path != null)
             IconButton(
               tooltip: 'Ask AI (Qwen2.5-VL) about this image',
               icon: const Icon(Icons.auto_awesome_outlined),
               onPressed: _openVlmChat,
             ),
-          if (!_liveMode && path != null)
+          if (path != null)
             IconButton(
               tooltip: 'Clear image',
               icon: const Icon(Icons.close),
@@ -541,106 +571,54 @@ class _OcrPageState extends State<OcrPage> {
             ),
         ],
       ),
-      body: _liveMode ? _buildLiveScanBody() : _buildPhotoBody(path),
+      body: path == null ? _buildLiveScanBody() : _buildPhotoBody(path),
     );
   }
 
-  Widget _buildPhotoBody(String? path) {
-    return Column(
+  Widget _buildPhotoBody(String path) {
+    return Stack(
+      fit: StackFit.expand,
       children: [
-        Expanded(
-          child: path == null
-              ? Center(
-                  child: Text(
-                    'Pick an image to run OCR',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                )
-              : Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    TextDetectorWidget(
-                      key: ValueKey(path),
-                      imagePath: path,
-                      backgroundColor: Colors.transparent,
-                      enableSelectionPreview: true,
-                      controller: _controller,
-                      onTextCopied: (text) => _showSnackBar(
-                        text.isEmpty
-                            ? 'Copied empty text'
-                            : 'Copied text (${text.length} chars)',
-                      ),
-                    ),
-                    // Barcode/QR overlay: only covers the small rects
-                    // around detected codes, so taps everywhere else fall
-                    // straight through to TextDetectorWidget's own
-                    // selection gestures underneath.
-                    if (_barcodes.isNotEmpty)
-                      LayoutBuilder(
-                        builder: (context, constraints) => Stack(
-                          children: [
-                            for (final code in _barcodes)
-                              if (_barcodeScreenRect(
-                                    code,
-                                    constraints.biggest,
-                                  )
-                                  case final rect?)
-                                Positioned.fromRect(
-                                  rect: rect,
-                                  child: GestureDetector(
-                                    behavior: HitTestBehavior.opaque,
-                                    onTap: () => _showBarcodeResult(code),
-                                    child: Container(
-                                      decoration: BoxDecoration(
-                                        border: Border.all(
-                                          color: Colors.tealAccent,
-                                          width: 2,
-                                        ),
-                                        borderRadius: BorderRadius.circular(
-                                          6,
-                                        ),
-                                        color: Colors.teal.withValues(
-                                          alpha: 0.12,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                          ],
+        TextDetectorWidget(
+          key: ValueKey(path),
+          imagePath: path,
+          backgroundColor: Colors.transparent,
+          enableSelectionPreview: true,
+          controller: _controller,
+          onTextCopied: (text) => _showSnackBar(
+            text.isEmpty ? 'Copied empty text' : 'Copied text (${text.length} chars)',
+          ),
+        ),
+        // Barcode/QR overlay: only covers the small rects around detected
+        // codes, so taps everywhere else fall straight through to
+        // TextDetectorWidget's own selection gestures underneath.
+        if (_barcodes.isNotEmpty)
+          LayoutBuilder(
+            builder: (context, constraints) => Stack(
+              children: [
+                for (final code in _barcodes)
+                  if (_barcodeScreenRect(code, constraints.biggest)
+                      case final rect?)
+                    Positioned.fromRect(
+                      rect: rect,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _showBarcodeResult(code),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: Colors.tealAccent,
+                              width: 2,
+                            ),
+                            borderRadius: BorderRadius.circular(6),
+                            color: Colors.teal.withValues(alpha: 0.12),
+                          ),
                         ),
                       ),
-                  ],
-                ),
-        ),
-        SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-            child: Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _isPickingImage
-                        ? null
-                        : () => _pickImage(ImageSource.gallery),
-                    icon: const Icon(Icons.photo_library_outlined),
-                    label: const Text('Gallery'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _isPickingImage
-                        ? null
-                        : () => _pickImage(ImageSource.camera),
-                    icon: const Icon(Icons.camera_alt_outlined),
-                    label: const Text('Camera'),
-                  ),
-                ),
+                    ),
               ],
             ),
           ),
-        ),
       ],
     );
   }
@@ -648,8 +626,42 @@ class _OcrPageState extends State<OcrPage> {
   // Live camera scanning, formerly the separate BarcodePage route --
   // ReaderWidget already provides the camera preview + continuous decode
   // loop, flash/gallery/switch-camera controls, no custom camera code
-  // needed here either.
+  // needed here either. Now the app's home state (see the comment on
+  // _liveController), with its own snapshot + gallery bar at the bottom
+  // for entering photo/analysis mode on purpose, in addition to a tapped
+  // text-region box freezing there automatically.
   Widget _buildLiveScanBody() {
+    if (_liveCameraError != null) {
+      // Camera permission denied or the controller otherwise failed to
+      // initialize -- keep the app usable via Gallery rather than showing
+      // a blank preview with no way forward.
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.no_photography_outlined, size: 48),
+              const SizedBox(height: 12),
+              Text(
+                'Camera unavailable (permission denied?). '
+                'You can still pick a photo from Gallery.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                onPressed: _isPickingImage
+                    ? null
+                    : () => _pickImage(ImageSource.gallery),
+                icon: const Icon(Icons.photo_library_outlined),
+                label: const Text('Gallery'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     final textImageSize = _liveTextRegionsImageSize;
     return Stack(
       children: [
@@ -666,11 +678,18 @@ class _OcrPageState extends State<OcrPage> {
           // trades a bit of per-attempt speed for reliability; barcodes
           // already decode near-instantly so shouldn't be hurt by it.
           tryHarder: true,
+          // ReaderWidget's own built-in gallery button runs its own
+          // pick-and-barcode-decode flow -- not what we want now that
+          // Gallery is a real entry point into full photo/analysis mode
+          // (below), not just a barcode-only shortcut. Its flash/
+          // switch-camera buttons stay, moved out of the way of both the
+          // hint banner (top) and our own bar (bottom).
+          showGallery: false,
+          actionButtonsAlignment: Alignment.centerRight,
           flashOnIcon: const Icon(Icons.flash_on),
           flashOffIcon: const Icon(Icons.flash_off),
           flashAlwaysIcon: const Icon(Icons.flash_on),
           flashAutoIcon: const Icon(Icons.flash_auto),
-          galleryIcon: const Icon(Icons.photo_library),
           toggleCameraIcon: const Icon(Icons.switch_camera),
         ),
         // Live text-region overlay (v0.2.0 milestone): mobile_ocr's
@@ -734,6 +753,56 @@ class _OcrPageState extends State<OcrPage> {
                 'tap one to read it.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white),
+              ),
+            ),
+          ),
+        ),
+        // Manual entry into photo/analysis mode: a snapshot button
+        // (freezes the current view, same as tapping a text-region box)
+        // plus a Gallery icon for loading an existing photo instead. Ask
+        // AI only appears once one of these (or a tapped text box, or a
+        // Share-sheet image) has set _imagePath -- see build().
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton.filled(
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.black.withValues(alpha: 0.6),
+                      padding: const EdgeInsets.all(14),
+                    ),
+                    onPressed: _isPickingImage
+                        ? null
+                        : () => _pickImage(ImageSource.gallery),
+                    icon: const Icon(
+                      Icons.photo_library_outlined,
+                      color: Colors.white,
+                    ),
+                    tooltip: 'Pick from Gallery',
+                  ),
+                  const SizedBox(width: 40),
+                  IconButton.filled(
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      padding: const EdgeInsets.all(20),
+                      shape: const CircleBorder(),
+                    ),
+                    onPressed: _liveController == null ? null : _takeSnapshot,
+                    icon: const Icon(
+                      Icons.camera,
+                      color: Colors.black,
+                      size: 32,
+                    ),
+                    tooltip: 'Take photo',
+                  ),
+                ],
               ),
             ),
           ),

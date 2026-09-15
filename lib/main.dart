@@ -36,6 +36,13 @@ class _TrackedTextRegion {
 
   Rect box;
   int missedCycles = 0;
+  // Cached once a recognition pass (see _runTextRecognitionCycle) matches
+  // this tracked box to a TextBlock's recognized text. Set-once: a tracked
+  // region that already has text is never re-recognized, since the point
+  // is avoiding the heavier detectText() call for text we already know.
+  // Implicitly cleared when the tracked region itself is dropped (missed
+  // too many cycles) -- there's no separate cache to invalidate.
+  String? recognizedText;
 }
 
 class VlOcrApp extends StatelessWidget {
@@ -117,6 +124,22 @@ class _OcrPageState extends State<OcrPage> {
   bool _textScanInFlight = false;
   Size? _liveTextRegionsImageSize;
   String? _liveTextRegionsImagePath;
+
+  // Separate, slower pass that runs mobile_ocr's full detectText() (real
+  // recognition, not just detection) against the same still the detection
+  // cycle above already captured -- no extra takePicture() call, so no
+  // extra shutter click. Deliberately its own timer with its own in-flight
+  // guard rather than folding into _runTextScanCycle: sharing one flag
+  // between two independently-paced jobs is exactly the bug that made the
+  // manual snapshot button silently do nothing (see _takeSnapshot), and
+  // detectText() is heavier than detectTextRegions() -- running it every
+  // 1.2s would make the detection cycle's own latency problem worse, not
+  // better. Slower cadence is fine here since recognized text is cached
+  // per tracked region once found (see _TrackedTextRegion.recognizedText)
+  // rather than needed every cycle.
+  static const _textRecognitionInterval = Duration(milliseconds: 3000);
+  Timer? _textRecognitionTimer;
+  bool _textRecognitionInFlight = false;
 
   // Each detectTextRegions() cycle is an independent snapshot with no
   // memory of the last one -- replacing the shown boxes wholesale every
@@ -262,7 +285,10 @@ class _OcrPageState extends State<OcrPage> {
     );
   }
 
-  Future<void> _copyBarcodeText(String text) async {
+  // Shared by the barcode result sheet and the recognized-live-text result
+  // sheet below -- generic clipboard copy, nothing barcode-specific about
+  // it despite living next to _openBarcodeUrl.
+  Future<void> _copyToClipboard(String text) async {
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
     _showSnackBar('Copied');
@@ -287,6 +313,7 @@ class _OcrPageState extends State<OcrPage> {
 
   void _onLiveCameraController(CameraController? controller, Exception? error) {
     _textScanTimer?.cancel();
+    _textRecognitionTimer?.cancel();
     _liveController = controller;
     _liveResultShowing = false;
     if (controller == null) {
@@ -310,6 +337,10 @@ class _OcrPageState extends State<OcrPage> {
     _textScanTimer = Timer.periodic(
       _textScanInterval,
       (_) => _runTextScanCycle(controller),
+    );
+    _textRecognitionTimer = Timer.periodic(
+      _textRecognitionInterval,
+      (_) => _runTextRecognitionCycle(),
     );
   }
 
@@ -340,6 +371,55 @@ class _OcrPageState extends State<OcrPage> {
     }
   }
 
+  /// Slower recognition pass, layered on top of the detection cycle above.
+  /// Runs mobile_ocr's full detectText() (detection + recognition together,
+  /// for the whole frame in one call -- not a per-region API) against
+  /// whatever still the detection cycle most recently captured, then
+  /// matches the returned TextBlocks against currently-tracked regions by
+  /// IoU (reusing the same helper the tracker itself uses) so a stable box
+  /// picks up real recognized text instead of staying an empty outline.
+  Future<void> _runTextRecognitionCycle() async {
+    if (_textRecognitionInFlight || _imagePath != null || !mounted) return;
+    final path = _liveTextRegionsImagePath;
+    if (path == null) return;
+    // Nothing to do if every currently-tracked box already has cached text,
+    // or there's nothing tracked at all -- skip the heavier call entirely.
+    if (_trackedTextRegions.isEmpty ||
+        _trackedTextRegions.every((region) => region.recognizedText != null)) {
+      return;
+    }
+    _textRecognitionInFlight = true;
+    try {
+      final result = await MobileOcr().detectText(imagePath: path);
+      if (!mounted || _imagePath != null) return;
+      var changed = false;
+      for (final region in _trackedTextRegions) {
+        if (region.recognizedText != null) continue;
+        var bestIou = 0.0;
+        TextBlock? bestBlock;
+        for (final block in result.blocks) {
+          final iou = _iou(region.box, block.boundingBox);
+          if (iou > bestIou) {
+            bestIou = iou;
+            bestBlock = block;
+          }
+        }
+        if (bestBlock != null &&
+            bestIou >= _textRegionIouMatchThreshold &&
+            bestBlock.text.isNotEmpty) {
+          region.recognizedText = bestBlock.text;
+          changed = true;
+        }
+      }
+      if (changed) setState(() {});
+    } catch (_) {
+      // Best-effort, same spirit as the detection cycle above -- skip this
+      // pass and try again next tick rather than surfacing an error.
+    } finally {
+      _textRecognitionInFlight = false;
+    }
+  }
+
   /// Manual snapshot button: takes a still on the same controller the auto
   /// text-scan cycle uses, and freezes straight into photo/analysis mode
   /// via the same entry point a tapped live text-region box or a gallery
@@ -362,18 +442,23 @@ class _OcrPageState extends State<OcrPage> {
     if (controller == null) return;
     if (!controller.value.isInitialized) return;
     _textScanTimer?.cancel();
+    _textRecognitionTimer?.cancel();
     try {
       final xfile = await controller.takePicture();
       if (!mounted) return;
       _setImagePath(xfile.path);
     } catch (_) {
       if (mounted) _showSnackBar('Could not capture photo');
-      // Freeze didn't happen -- still in live mode, so resume auto text
-      // scanning rather than leaving it permanently stopped.
+      // Freeze didn't happen -- still in live mode, so resume both live
+      // scanning jobs rather than leaving them permanently stopped.
       if (mounted && _imagePath == null && _liveController != null) {
         _textScanTimer = Timer.periodic(
           _textScanInterval,
           (_) => _runTextScanCycle(_liveController!),
+        );
+        _textRecognitionTimer = Timer.periodic(
+          _textRecognitionInterval,
+          (_) => _runTextRecognitionCycle(),
         );
       }
     }
@@ -382,6 +467,8 @@ class _OcrPageState extends State<OcrPage> {
   void _stopLiveTextScan() {
     _textScanTimer?.cancel();
     _textScanTimer = null;
+    _textRecognitionTimer?.cancel();
+    _textRecognitionTimer = null;
     _liveController = null;
     _trackedTextRegions = [];
     _liveTextRegionsImageSize = null;
@@ -503,7 +590,7 @@ class _OcrPageState extends State<OcrPage> {
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: () => _copyBarcodeText(text),
+                      onPressed: () => _copyToClipboard(text),
                       icon: const Icon(Icons.copy_outlined),
                       label: const Text('Copy'),
                     ),
@@ -527,11 +614,50 @@ class _OcrPageState extends State<OcrPage> {
     ).then((_) => onDismissed?.call());
   }
 
+  /// Tapping a live text-region box that already has cached recognized
+  /// text (see _runTextRecognitionCycle) shows it immediately instead of
+  /// freezing into full photo mode -- the whole point of pre-recognizing
+  /// it. Adapted from _showBarcodeResult's layout, minus the format label
+  /// and URL-open button, which are barcode-specific.
+  void _showRecognizedTextResult(String text) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 200),
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    text,
+                    style: Theme.of(sheetContext).textTheme.titleMedium,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () => _copyToClipboard(text),
+                icon: const Icon(Icons.copy_outlined),
+                label: const Text('Copy'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _shareSub.cancel();
     _controller.dispose();
     _textScanTimer?.cancel();
+    _textRecognitionTimer?.cancel();
     super.dispose();
   }
 
@@ -744,17 +870,58 @@ class _OcrPageState extends State<OcrPage> {
                       rect: rect,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: _freezeOnLiveTextRegion,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            border: Border.all(
-                              color: Colors.amberAccent,
-                              width: 2,
-                            ),
-                            borderRadius: BorderRadius.circular(4),
-                            color: Colors.amber.withValues(alpha: 0.12),
-                          ),
-                        ),
+                        // A box with cached recognized text (see
+                        // _runTextRecognitionCycle) shows it immediately
+                        // instead of freezing into full photo mode -- no
+                        // reason to re-run recognition from scratch on
+                        // something already known.
+                        onTap: region.recognizedText != null
+                            ? () =>
+                                  _showRecognizedTextResult(
+                                    region.recognizedText!,
+                                  )
+                            : _freezeOnLiveTextRegion,
+                        child: region.recognizedText == null
+                            ? Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: Colors.amberAccent,
+                                    width: 2,
+                                  ),
+                                  borderRadius: BorderRadius.circular(4),
+                                  color: Colors.amber.withValues(alpha: 0.12),
+                                ),
+                              )
+                            // Recognized: swap the empty outline for the
+                            // actual text, legible at a glance instead of
+                            // needing to freeze/zoom to read it -- this is
+                            // the "magnify" ask, satisfied by just showing
+                            // the real recognized string.
+                            : Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                  vertical: 2,
+                                ),
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: Colors.lightGreenAccent,
+                                    width: 2,
+                                  ),
+                                  borderRadius: BorderRadius.circular(4),
+                                  color: Colors.black.withValues(alpha: 0.72),
+                                ),
+                                child: Text(
+                                  region.recognizedText!,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
                       ),
                     ),
               ],

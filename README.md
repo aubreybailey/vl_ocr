@@ -196,6 +196,32 @@ motion-predicted/Kalman-filtered -- plain box overlap plus hysteresis is
 enough for a mostly-still camera pointed at a page, and matches the
 scope of similar fixes already shipped here. Not yet re-tested.
 
+On-device testing also surfaced that detected boxes had no actual text
+to show ("not extracting... the text in the box, which is kind of the
+whole point of ID-ing a text region") -- a separate complaint from the
+frozen-snapshot resolution bug fixed above (that one was mistaken for a
+detection-quality problem but was really about capture resolution).
+`detectTextRegions()` is detection-only by design (see
+above) -- it was never going to grow recognized text on its own. Added a
+second, independently-throttled pass (`_runTextRecognitionCycle`, every
+3000ms, its own in-flight guard -- deliberately not sharing one with the
+1200ms detection cycle, since that exact sharing pattern is what made the
+manual snapshot button silently swallow taps, fixed above) that calls
+`MobileOcr().detectText()` -- the same full recognition call
+`TextDetectorWidget` uses, run here against whatever still the detection
+cycle most recently captured rather than taking a fresh photo -- and
+matches the returned blocks against currently-tracked regions by the same
+IoU logic the tracker itself uses. A match caches its recognized text
+onto that tracked region permanently (cheap: recognition only needs to
+happen once per tracked box, not every cycle) and swaps its rendering
+from an empty amber outline to a small readable label showing the actual
+text -- satisfying the "extract and magnify" ask without a literal
+magnifier, since legible recognized text is more useful than a zoomed
+camera crop would be. Tapping an already-recognized box shows it
+instantly via a Copy sheet instead of freezing into photo mode; tapping
+one that isn't recognized yet still freezes as before. Not yet
+re-tested on-device.
+
 First on-device test found text detection working well but the barcode
 overlay untappable. Root cause: `flutter_zxing`'s convenience
 `readBarcodesImagePath` decodes via `package:image`, which leaves EXIF

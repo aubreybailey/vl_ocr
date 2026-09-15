@@ -222,6 +222,31 @@ instantly via a Copy sheet instead of freezing into photo mode; tapping
 one that isn't recognized yet still freezes as before. Not yet
 re-tested on-device.
 
+On-device testing surfaced a real duplicate-tracking bug once recognized
+labels made the overlay dense enough to actually scrutinize: amber boxes
+piled up into an overlapping cluster over just a handful of real lines,
+and green recognized labels sat visibly offset from both the unrecognized
+boxes and the real text underneath. Root cause: `_updateTrackedTextRegions`
+only ever compares a tracked box against *new* detections each cycle, never
+against other tracked boxes -- so two tracked entries that independently
+drift (or get independently spawned for the same line, since a fresh
+`takePicture()` capture's own detection isn't perfectly consistent run to
+run) can coexist indefinitely, each accruing its own separate missed-cycle
+count instead of ever being recognized as duplicates of each other. Fixed
+with a merge pass (`_mergeOverlappingTrackedRegions`, run after every
+update) that collapses any two tracked regions overlapping above a looser
+threshold than the match one (0.15 vs. 0.3 -- two boxes only need to
+clearly be "the same line", not a tight positional match, to justify
+merging), always keeping a completed recognition over an empty outline
+when merging a pair. Separately, some residual lag between a box and the
+real text underneath is expected and not fully fixable by this: each
+box's position is only as fresh as its last successful detection cycle
+(~1.2s, or up to the ~2.4s missed-cycle grace window), so a camera that's
+moving (not just held imperfectly still) will always show boxes trailing
+slightly behind real position. Removing that lag entirely would need the
+continuous raw-frame-stream architecture explicitly deferred earlier in
+favor of the simpler throttled-still approach. Not yet re-tested.
+
 First on-device test found text detection working well but the barcode
 overlay untappable. Root cause: `flutter_zxing`'s convenience
 `readBarcodesImagePath` decodes via `package:image`, which leaves EXIF

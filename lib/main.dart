@@ -154,6 +154,10 @@ class _OcrPageState extends State<OcrPage> {
   // overkill here.
   static const _textRegionIouMatchThreshold = 0.3;
   static const _textRegionMaxMissedCycles = 2;
+  // Looser than the match threshold above on purpose: two tracked boxes
+  // only need to clearly be "the same line of text" to justify collapsing
+  // them, not a tight positional match. See _mergeOverlappingTrackedRegions.
+  static const _textRegionMergeIouThreshold = 0.15;
   List<_TrackedTextRegion> _trackedTextRegions = [];
 
   @override
@@ -510,6 +514,51 @@ class _OcrPageState extends State<OcrPage> {
       if (!claimed[i]) {
         _trackedTextRegions.add(_TrackedTextRegion(newBoxes[i]));
       }
+    }
+
+    _mergeOverlappingTrackedRegions();
+  }
+
+  /// Collapses tracked regions that visibly overlap each other into one.
+  ///
+  /// Matching above only ever compares a tracked box against *new*
+  /// detections, never against other tracked boxes -- so two tracked
+  /// entries that independently drift (or get independently spawned) to
+  /// nearly the same spot can coexist indefinitely, each accruing its own
+  /// missed-cycle count instead of being recognized as duplicates.
+  /// Confirmed on-device: a dense pile of amber boxes over just a
+  /// handful of real lines, with recognized (green) labels visibly
+  /// offset from both the unrecognized boxes and the real text
+  /// underneath, since only one of several near-identical tracked
+  /// entries for the same line was actually current. Runs after every
+  /// update so duplicates never survive more than one frame.
+  void _mergeOverlappingTrackedRegions() {
+    var i = 0;
+    while (i < _trackedTextRegions.length) {
+      var mergedAny = false;
+      var j = i + 1;
+      while (j < _trackedTextRegions.length) {
+        final a = _trackedTextRegions[i];
+        final b = _trackedTextRegions[j];
+        if (_iou(a.box, b.box) >= _textRegionMergeIouThreshold) {
+          // Never discard a completed recognition; between two unrecognized
+          // (or two recognized) entries, keep whichever has been tracked
+          // more reliably.
+          final keepA = a.recognizedText != null
+              ? true
+              : b.recognizedText != null
+              ? false
+              : a.missedCycles <= b.missedCycles;
+          if (!keepA) {
+            _trackedTextRegions[i] = b;
+          }
+          _trackedTextRegions.removeAt(j);
+          mergedAny = true;
+        } else {
+          j++;
+        }
+      }
+      if (!mergedAny) i++;
     }
   }
 

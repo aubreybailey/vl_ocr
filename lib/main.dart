@@ -341,23 +341,41 @@ class _OcrPageState extends State<OcrPage> {
   }
 
   /// Manual snapshot button: takes a still on the same controller the auto
-  /// text-scan cycle uses (guarded by the same _textScanInFlight flag so
-  /// the two can't fire concurrent takePicture() calls) and freezes
-  /// straight into photo/analysis mode via the same entry point a tapped
-  /// live text-region box or a gallery pick already uses.
+  /// text-scan cycle uses, and freezes straight into photo/analysis mode
+  /// via the same entry point a tapped live text-region box or a gallery
+  /// pick already uses.
+  ///
+  /// Deliberately does NOT wait on _textScanInFlight. Measured on-device:
+  /// a single auto-cycle takePicture()+detectTextRegions() round trip takes
+  /// ~1.7-1.8s in practice, longer than its own ~1.2s tick interval -- so
+  /// that flag is true roughly 75% of the time, and a tap landing then
+  /// previously did nothing at all (confirmed: tapped, waited 3+ seconds,
+  /// screen never froze). Cancel the auto-cycle outright instead of
+  /// deferring to it. CameraX's own ImageCapture use case already queues/
+  /// serializes concurrent takePicture() calls internally (logcat:
+  /// "TakePictureManagerImpl: Issue the next TakePictureRequest"), so it's
+  /// safe for this call to queue behind an already-in-flight auto-cycle
+  /// capture at the CameraX level even without waiting on the Dart-side
+  /// flag ourselves.
   Future<void> _takeSnapshot() async {
     final controller = _liveController;
-    if (controller == null || _textScanInFlight) return;
+    if (controller == null) return;
     if (!controller.value.isInitialized) return;
-    _textScanInFlight = true;
+    _textScanTimer?.cancel();
     try {
       final xfile = await controller.takePicture();
       if (!mounted) return;
       _setImagePath(xfile.path);
     } catch (_) {
       if (mounted) _showSnackBar('Could not capture photo');
-    } finally {
-      _textScanInFlight = false;
+      // Freeze didn't happen -- still in live mode, so resume auto text
+      // scanning rather than leaving it permanently stopped.
+      if (mounted && _imagePath == null && _liveController != null) {
+        _textScanTimer = Timer.periodic(
+          _textScanInterval,
+          (_) => _runTextScanCycle(_liveController!),
+        );
+      }
     }
   }
 
@@ -670,7 +688,19 @@ class _OcrPageState extends State<OcrPage> {
           onScanFailure: (_) {},
           onControllerCreated: _onLiveCameraController,
           scanDelay: const Duration(milliseconds: 500),
-          resolution: ResolutionPreset.high,
+          // ResolutionPreset.high (the unset default) measured via logcat
+          // at 1280x720 on this device -- ~13x fewer pixels than a normal
+          // photo (4096x3072), which directly starved post-freeze text
+          // detection of detail on body-text-sized print. max ("the
+          // highest resolution available" per camera_platform_interface's
+          // own doc comment) fixes that, but this plugin ties Preview/
+          // ImageCapture/ImageAnalysis to one shared resolution, so the
+          // continuous barcode-scan and ~1.2s text-scan cycles now process
+          // much bigger frames too -- not yet confirmed on-device whether
+          // that makes live scanning noticeably laggier. If so, try
+          // ResolutionPreset.ultraHigh (~2160p) or .veryHigh (~1080p) next
+          // rather than reverting outright.
+          resolution: ResolutionPreset.max,
           lensDirection: CameraLensDirection.back,
           // Defaults to false. User feedback (from when this lived in the
           // now-deleted BarcodePage): QR, especially dense ones like
@@ -762,6 +792,15 @@ class _OcrPageState extends State<OcrPage> {
         // plus a Gallery icon for loading an existing photo instead. Ask
         // AI only appears once one of these (or a tapped text box, or a
         // Share-sheet image) has set _imagePath -- see build().
+        //
+        // Gallery and the shutter are positioned independently rather than
+        // as a centered Row -- a Row centers the *pair*, which visibly
+        // pulls the shutter button off true screen-center toward the
+        // Gallery side (confirmed via an on-device screenshot). The
+        // shutter needs to land dead-center regardless of Gallery's own
+        // position, so it's the Stack's one unpositioned child (centered
+        // by the Stack's own alignment) while Gallery is independently
+        // pinned to the left via Align.
         Positioned(
           left: 0,
           right: 0,
@@ -770,39 +809,51 @@ class _OcrPageState extends State<OcrPage> {
             top: false,
             child: Padding(
               padding: const EdgeInsets.only(bottom: 20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton.filled(
-                    style: IconButton.styleFrom(
-                      backgroundColor: Colors.black.withValues(alpha: 0.6),
-                      padding: const EdgeInsets.all(14),
+              child: SizedBox(
+                width: double.infinity,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 24),
+                        child: IconButton.filled(
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.black.withValues(
+                              alpha: 0.6,
+                            ),
+                            padding: const EdgeInsets.all(14),
+                          ),
+                          onPressed: _isPickingImage
+                              ? null
+                              : () => _pickImage(ImageSource.gallery),
+                          icon: const Icon(
+                            Icons.photo_library_outlined,
+                            color: Colors.white,
+                          ),
+                          tooltip: 'Pick from Gallery',
+                        ),
+                      ),
                     ),
-                    onPressed: _isPickingImage
-                        ? null
-                        : () => _pickImage(ImageSource.gallery),
-                    icon: const Icon(
-                      Icons.photo_library_outlined,
-                      color: Colors.white,
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        padding: const EdgeInsets.all(20),
+                        shape: const CircleBorder(),
+                      ),
+                      onPressed: _liveController == null
+                          ? null
+                          : _takeSnapshot,
+                      icon: const Icon(
+                        Icons.camera,
+                        color: Colors.black,
+                        size: 32,
+                      ),
+                      tooltip: 'Take photo',
                     ),
-                    tooltip: 'Pick from Gallery',
-                  ),
-                  const SizedBox(width: 40),
-                  IconButton.filled(
-                    style: IconButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      padding: const EdgeInsets.all(20),
-                      shape: const CircleBorder(),
-                    ),
-                    onPressed: _liveController == null ? null : _takeSnapshot,
-                    icon: const Icon(
-                      Icons.camera,
-                      color: Colors.black,
-                      size: 32,
-                    ),
-                    tooltip: 'Take photo',
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

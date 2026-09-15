@@ -53,7 +53,51 @@ of the same single check rather than needing separate handling. Camera
 permission denial (now something a user can hit immediately on first
 launch, since live view is the default rather than something opted
 into) falls back to a plain message plus a Gallery button rather than a
-blank screen. Not yet tested on-device.
+blank screen.
+
+First on-device test surfaced three real bugs, each confirmed with
+evidence rather than fixed on a guess:
+
+- **Shutter button wasn't centered.** Measured directly from a
+  screenshot: Gallery and the shutter shared one centered `Row`, so
+  centering the *pair* visibly pulled the shutter off true
+  screen-center toward the Gallery side. Fixed by making the shutter
+  the `Stack`'s one unpositioned child (centered by the `Stack`'s own
+  alignment) and pinning Gallery independently via
+  `Align(alignment: Alignment.centerLeft)`, so neither affects the
+  other's position.
+- **Frozen snapshots had far fewer detected text regions than a normal
+  photo.** Root cause found via logcat at cold launch, not guessed:
+  `ReaderWidget`'s camera session binds `Preview`, `ImageCapture`, and
+  `ImageAnalysis` all to `ResolutionPreset.high` -- measured at
+  `1280x720` on this device, ~13x fewer pixels than a normal photo
+  (`4096x3072`) used in earlier static-photo tests. A 720p frame simply
+  doesn't resolve body-text-sized print well enough for the detector.
+  Bumped to `ResolutionPreset.max` ("the highest resolution available"
+  per `camera_platform_interface`'s own doc comment). Real tradeoff,
+  not yet confirmed on-device: this plugin ties all three use cases to
+  one shared resolution, so the continuous barcode scan and the
+  ~1.2s text-scan cycle now process much bigger frames too, which
+  could make live scanning noticeably laggier. If so, try
+  `ResolutionPreset.ultraHigh` (~2160p) or `.veryHigh` (~1080p) next
+  rather than reverting outright -- left as a one-line constant to
+  retune.
+- **The manual snapshot button could silently do nothing.** Confirmed
+  by tapping it, waiting 3+ seconds, and watching the screen never
+  freeze. Root cause: `_takeSnapshot()` checked the same
+  `_textScanInFlight` guard the automatic text-scan cycle uses -- and a
+  single auto-cycle round trip measured ~1.7-1.8s in practice, longer
+  than its own ~1.2s tick interval, so that flag is true roughly 75% of
+  the time. A tap landing then was silently dropped. Fixed by having
+  the manual snapshot cancel the auto-scan timer outright and call
+  `takePicture()` directly, without waiting on the shared flag; CameraX's
+  own `ImageCapture` use case already queues/serializes concurrent
+  `takePicture()` calls internally (logcat: `TakePictureManagerImpl:
+  Issue the next TakePictureRequest`), so this is safe even if an
+  auto-cycle capture happens to already be in flight. If the capture
+  itself fails, the auto-scan timer resumes rather than staying stopped.
+
+Not yet re-tested on-device after these three fixes.
 
 **OCR screen (`mobile_ocr`): working well**, confirmed on-device. The
 Share-sheet path works from Photos/Gallery and screenshots; sharing

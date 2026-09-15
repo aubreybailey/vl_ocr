@@ -28,6 +28,16 @@ import 'package:url_launcher/url_launcher.dart';
 
 void main() => runApp(const VlOcrApp());
 
+/// A live text region carried across detection cycles so its on-screen box
+/// stays put instead of popping to a new position/identity every cycle --
+/// see [_OcrPageState._updateTrackedTextRegions] for why this exists.
+class _TrackedTextRegion {
+  _TrackedTextRegion(this.box);
+
+  Rect box;
+  int missedCycles = 0;
+}
+
 class VlOcrApp extends StatelessWidget {
   const VlOcrApp({super.key});
 
@@ -91,9 +101,23 @@ class _OcrPageState extends State<OcrPage> {
   static const _textScanInterval = Duration(milliseconds: 1200);
   Timer? _textScanTimer;
   bool _textScanInFlight = false;
-  List<TextRegion> _liveTextRegions = const [];
   Size? _liveTextRegionsImageSize;
   String? _liveTextRegionsImagePath;
+
+  // Each detectTextRegions() cycle is an independent snapshot with no
+  // memory of the last one -- replacing the shown boxes wholesale every
+  // cycle made whichever blocks cleared the confidence threshold *this*
+  // particular frame (subject to hand shake, refocus, fresh JPEG
+  // re-encode noise) look like they were randomly flickering between
+  // different text blocks, never settling. Tracked instead: match new
+  // detections to the previous cycle's by IoU, carry a matched box's
+  // identity forward, and give an unmatched one a few missed cycles of
+  // grace before it disappears -- the same idea face-tracking APIs use,
+  // scaled down to plain box overlap since true motion prediction is
+  // overkill here.
+  static const _textRegionIouMatchThreshold = 0.3;
+  static const _textRegionMaxMissedCycles = 2;
+  List<_TrackedTextRegion> _trackedTextRegions = [];
 
   @override
   void initState() {
@@ -278,7 +302,7 @@ class _OcrPageState extends State<OcrPage> {
       );
       if (!mounted || !_liveMode) return;
       setState(() {
-        _liveTextRegions = result.regions;
+        _updateTrackedTextRegions(result.regions);
         _liveTextRegionsImageSize = result.imageSize;
         _liveTextRegionsImagePath = xfile.path;
       });
@@ -296,9 +320,60 @@ class _OcrPageState extends State<OcrPage> {
   void _stopLiveTextScan() {
     _textScanTimer?.cancel();
     _textScanTimer = null;
-    _liveTextRegions = const [];
+    _trackedTextRegions = [];
     _liveTextRegionsImageSize = null;
     _liveTextRegionsImagePath = null;
+  }
+
+  /// Reconciles a fresh detection cycle's regions against the tracked boxes
+  /// from previous cycles instead of replacing them outright -- see the
+  /// comment on [_trackedTextRegions] for why.
+  void _updateTrackedTextRegions(List<TextRegion> newRegions) {
+    final newBoxes = newRegions.map((r) => r.boundingBox).toList();
+    final claimed = List<bool>.filled(newBoxes.length, false);
+
+    for (final tracked in _trackedTextRegions) {
+      var bestIou = 0.0;
+      var bestIndex = -1;
+      for (var i = 0; i < newBoxes.length; i++) {
+        if (claimed[i]) continue;
+        final iou = _iou(tracked.box, newBoxes[i]);
+        if (iou > bestIou) {
+          bestIou = iou;
+          bestIndex = i;
+        }
+      }
+      if (bestIndex != -1 && bestIou >= _textRegionIouMatchThreshold) {
+        tracked.box = newBoxes[bestIndex];
+        tracked.missedCycles = 0;
+        claimed[bestIndex] = true;
+      } else {
+        tracked.missedCycles++;
+      }
+    }
+
+    _trackedTextRegions.removeWhere(
+      (tracked) => tracked.missedCycles > _textRegionMaxMissedCycles,
+    );
+
+    for (var i = 0; i < newBoxes.length; i++) {
+      if (!claimed[i]) {
+        _trackedTextRegions.add(_TrackedTextRegion(newBoxes[i]));
+      }
+    }
+  }
+
+  /// Intersection-over-union of two rects, in the same coordinate space
+  /// (here, the source photo's pixel space both come from). 0 for
+  /// non-overlapping or degenerate rects.
+  double _iou(Rect a, Rect b) {
+    final intersection = a.intersect(b);
+    if (intersection.width <= 0 || intersection.height <= 0) return 0;
+    final intersectionArea = intersection.width * intersection.height;
+    final unionArea =
+        a.width * a.height + b.width * b.height - intersectionArea;
+    if (unionArea <= 0) return 0;
+    return intersectionArea / unionArea;
   }
 
   /// Maps a detector-only text region's bounding box (in the source photo's
@@ -605,13 +680,13 @@ class _OcrPageState extends State<OcrPage> {
         // takePicture() + detectTextRegions() round trip. Tapping a box
         // freezes on the frame that produced it and hands off to the same
         // full-recognition pipeline a picked/shared photo already uses.
-        if (_liveTextRegions.isNotEmpty && textImageSize != null)
+        if (_trackedTextRegions.isNotEmpty && textImageSize != null)
           LayoutBuilder(
             builder: (context, constraints) => Stack(
               children: [
-                for (final region in _liveTextRegions)
+                for (final region in _trackedTextRegions)
                   if (_textRegionScreenRect(
-                        region.boundingBox,
+                        region.box,
                         textImageSize,
                         constraints.biggest,
                       )

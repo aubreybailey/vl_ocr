@@ -72,8 +72,7 @@ live scanner uses. Coexists with `mobile_ocr`'s own text-selection UI
 underneath since the tap targets are only the small per-code rects, not a
 full-screen overlay.
 
-**v0.2.0 milestone (live streaming text-box overlay): shipped, not yet
-tested on-device.** The live camera view now also draws amber boxes over
+**v0.2.0 milestone (live streaming text-box overlay): shipped.** The live camera view now also draws amber boxes over
 detected text, alongside the existing teal barcode boxes -- the actual
 Lens live-preview trick. `mobile_ocr`'s `detectTextRegions()` is a
 detector-only call (no recognition, cheaper than the full pipeline) but
@@ -96,6 +95,32 @@ live mode clicks audibly roughly once every 1.2s while scanning for text.
 If that's too annoying in practice, a future iteration could lengthen the
 interval or make it tap-to-scan instead of automatic -- left as an easy
 constant to change (`_textScanInterval`) rather than solved preemptively.
+
+First on-device test: text detection worked, but boxes never settled --
+they visibly jumped between different text blocks cycle to cycle rather
+than tracking the same block the way face detection does, giving an
+impression of the view "toggling between modes". Investigated with an
+on-device logcat capture rather than guessing: CameraX issued clean,
+evenly-spaced `takePicture()` calls with zero errors/dropped-frame
+warnings overlapping the barcode scanner's own concurrent frame stream --
+not camera hardware contention. Checked the native detector too:
+`TextRegionDetector.kt`'s `MAX_REGIONS = 1000`, nowhere near a 5-region
+cap. The actual cause was simpler: each cycle's `setState` did
+`_liveTextRegions = result.regions`, a full replace with zero memory of
+the previous cycle. A real scene has some roughly-fixed number of text
+blocks, but *which* specific ones clear the detector's confidence
+threshold varies cycle to cycle (hand shake, refocus, fresh JPEG
+re-encode noise on each capture) -- with no continuity, that reads
+exactly like random flicker between blocks. Fixed with a small
+IoU-based tracker (`_TrackedTextRegion`, `_updateTrackedTextRegions`):
+match each cycle's detections to the previous cycle's tracked boxes by
+intersection-over-union (threshold 0.3), carry a matched box's position
+forward under the same identity, and give an unmatched box up to 2
+missed cycles of grace (~2.4s at the current interval) before dropping
+it, rather than vanishing the instant one cycle doesn't confirm it. Not
+motion-predicted/Kalman-filtered -- plain box overlap plus hysteresis is
+enough for a mostly-still camera pointed at a page, and matches the
+scope of similar fixes already shipped here. Not yet re-tested.
 
 First on-device test found text detection working well but the barcode
 overlay untappable. Root cause: `flutter_zxing`'s convenience

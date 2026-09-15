@@ -247,6 +247,25 @@ slightly behind real position. Removing that lag entirely would need the
 continuous raw-frame-stream architecture explicitly deferred earlier in
 favor of the simpler throttled-still approach. Not yet re-tested.
 
+That merge pass made things visibly worse on the next on-device test:
+the same recognized text appeared repeated across many boxes clustered
+at the top of the frame. Real bug, found by re-reading the recognition
+cycle rather than guessing: `_runTextRecognitionCycle`'s block-matching
+loop had no `claimed` guard on `result.blocks` (unlike the detection
+cycle's `_updateTrackedTextRegions`, which already correctly prevents
+one new detection from being claimed by more than one tracked region).
+Several tracked regions that each overlap one real line well enough
+individually -- but not each other enough to have been merged by the
+pass above -- were all independently finding that same line as their
+own best match and all caching the identical string. Fixed by adding the
+same claimed[] pattern to the recognition side. The separately-reported
+"takes a long time after startup to start recognizing" isn't yet
+diagnosed -- may be inherent ramp-up (a region needs to survive a few
+detection cycles before the ~3s recognition timer has a stable,
+unclaimed candidate to match against) rather than a regression from
+either fix above; revisit with real timing data if it's still slow after
+this fix lands, rather than guessing further. Not yet re-tested.
+
 First on-device test found text detection working well but the barcode
 overlay untappable. Root cause: `flutter_zxing`'s convenience
 `readBarcodesImagePath` decodes via `package:image`, which leaves EXIF

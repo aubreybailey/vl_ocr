@@ -396,22 +396,33 @@ class _OcrPageState extends State<OcrPage> {
     try {
       final result = await MobileOcr().detectText(imagePath: path);
       if (!mounted || _imagePath != null) return;
+      // Each recognized block may be claimed by at most one tracked region --
+      // without this, several tracked regions that overlap the same real
+      // line well enough individually, but not each other enough to have
+      // been merged, all independently pick that line as their own "best"
+      // match and all cache the identical text, rendering as the same
+      // recognized string repeated across multiple boxes. Mirrors the
+      // claimed[] guard _updateTrackedTextRegions already uses for the
+      // same reason on the detection side.
+      final claimed = List<bool>.filled(result.blocks.length, false);
       var changed = false;
       for (final region in _trackedTextRegions) {
         if (region.recognizedText != null) continue;
         var bestIou = 0.0;
-        TextBlock? bestBlock;
-        for (final block in result.blocks) {
-          final iou = _iou(region.box, block.boundingBox);
+        var bestIndex = -1;
+        for (var i = 0; i < result.blocks.length; i++) {
+          if (claimed[i]) continue;
+          final iou = _iou(region.box, result.blocks[i].boundingBox);
           if (iou > bestIou) {
             bestIou = iou;
-            bestBlock = block;
+            bestIndex = i;
           }
         }
-        if (bestBlock != null &&
+        if (bestIndex != -1 &&
             bestIou >= _textRegionIouMatchThreshold &&
-            bestBlock.text.isNotEmpty) {
-          region.recognizedText = bestBlock.text;
+            result.blocks[bestIndex].text.isNotEmpty) {
+          region.recognizedText = result.blocks[bestIndex].text;
+          claimed[bestIndex] = true;
           changed = true;
         }
       }

@@ -888,6 +888,19 @@ class _OcrPageState extends State<OcrPage> {
           // rather than reverting outright.
           resolution: ResolutionPreset.max,
           lensDirection: CameraLensDirection.back,
+          // Defaults to 0.5: ReaderWidget both actually restricts barcode
+          // decoding to a centered crop of that fraction of the frame AND
+          // draws a corner-bracket guide box for it (the guide only renders
+          // when cropPercent != 0 -- verified in the widget's own source,
+          // so this alone also removes the box, no separate
+          // showScannerOverlay flag needed). Not just a cosmetic collision
+          // with the amber/green text boxes (which already cover the full
+          // frame, per _runTextScanCycle) -- barcode scanning itself was
+          // silently limited to that center square the whole time, since
+          // this widget's isMultiScan (the other thing that zeroes the
+          // crop) is only set on the static-photo decode path, not here.
+          // 0 means "entire image", per DecodeParams' own doc comment.
+          cropPercent: 0,
           // Defaults to false. User feedback (from when this lived in the
           // now-deleted BarcodePage): QR, especially dense ones like
           // Matter pairing codes, was slow/unreliable live. tryHarder

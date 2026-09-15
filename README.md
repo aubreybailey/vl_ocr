@@ -266,6 +266,23 @@ unclaimed candidate to match against) rather than a regression from
 either fix above; revisit with real timing data if it's still slow after
 this fix lands, rather than guessing further. Not yet re-tested.
 
+User also asked to remove `ReaderWidget`'s grey corner-bracket target
+box, since it visually collided with the amber/green text boxes and the
+app now wants detection across the whole frame, not just a centered
+region. Checked the widget's own source before touching it rather than
+assuming `showScannerOverlay: false` alone would do it: that guide only
+renders when `cropPercent != 0`, and `cropPercent` isn't purely cosmetic
+-- it also actually restricts real barcode decoding to that centered
+crop (default 0.5, i.e. the middle 50%). This widget's other way to zero
+that crop, `isMultiScan`, is only set on the static-photo decode path,
+not here, so live barcode scanning had been silently limited to the
+center square the whole time the grey box was up, not just visually
+suggesting it. Set `cropPercent: 0` (`DecodeParams`' own doc comment:
+0 means "entire image") instead of just hiding the overlay -- removes
+the box and actually extends live barcode scanning to the full frame to
+match text detection, rather than leaving an invisible restriction in
+place. Not yet re-tested.
+
 First on-device test found text detection working well but the barcode
 overlay untappable. Root cause: `flutter_zxing`'s convenience
 `readBarcodesImagePath` decodes via `package:image`, which leaves EXIF

@@ -317,6 +317,38 @@ already substantial work per iteration, so shortening the interval would
 add contention/heat/battery cost without addressing the confirmed actual
 cause. Not yet re-tested.
 
+User then suspected some of the box misplacement was down to a
+completely different mechanism: the phone silently reading a barcode
+that wasn't visible in the framing they saw, discovered by deliberately
+testing for it (framing a code just outside what the screen showed,
+confirmed on request). Checked `dumpsys media.camera`: this device's
+back camera reports `LOGICAL_MULTI_CAMERA`, Android's mechanism for
+presenting several physical lenses (main + ultrawide here) as one
+continuous logical stream, with the OS/HAL free to route between them.
+Watching it happen live nailed the exact cause, not just the general
+capability: tapping a box to freeze visibly zoomed the preview *out*
+right before capturing, revealing codes that had been outside the
+frame a moment earlier. Traced to `ReaderWidget`'s own source rather
+than staying at "logical multi-camera can do this in general": its
+setup sets the working zoom to the device's *minimum* zoom level
+(`_scaleFactor = _minZoomLevel`), not 1.0. On a logical-multi-camera
+phone, minimum zoom is below 1.0x specifically because that range hands
+off to the ultrawide sensor -- so every camera bind was deterministically
+starting scanning zoomed into ultrawide, not a rare/conditional HAL
+decision. Fixed by forcing zoom back to 1.0 (the primary sensor's native
+framing, which is what the preview visually represents to the user)
+right after the controller is created, and turning off `allowPinchZoom`
+since it's the only other thing in the widget that could move zoom away
+from that and serves no purpose for scanning text/codes. This should
+also remove a source of the "yellow box coordinate hallucination"
+complaint above: a tracked box's cached position was computed from
+whatever frame the capture cycle got, and if that frame's field of view
+silently changed between cycles (ultrawide one moment, primary the
+next), the same pixel coordinates would map to different real-world
+locations, which the IoU tracker has no way to account for. Not yet
+re-tested; the tracker fixes above address a real, separate problem
+either way and aren't being unwound.
+
 First on-device test found text detection working well but the barcode
 overlay untappable. Root cause: `flutter_zxing`'s convenience
 `readBarcodesImagePath` decodes via `package:image`, which leaves EXIF

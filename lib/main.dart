@@ -329,6 +329,25 @@ class _OcrPageState extends State<OcrPage> {
     if (_liveCameraError != null && mounted) {
       setState(() => _liveCameraError = null);
     }
+    // ReaderWidget's own setup sets its working zoom to the device's
+    // *minimum* zoom level, not 1.0 -- confirmed in its source
+    // (`_scaleFactor = _minZoomLevel`). On a phone whose back camera is a
+    // logical multi-camera (confirmed on this device via `dumpsys
+    // media.camera`: LOGICAL_MULTI_CAMERA capability), minimum zoom is
+    // below 1.0x specifically because that range hands off to the
+    // ultrawide physical sensor -- so every camera (re)bind was silently
+    // starting scanning zoomed into ultrawide, capturing a visibly wider
+    // field of view than what a 1.0x preview leads the user to expect.
+    // Confirmed on-device: a barcode outside the apparent frame got
+    // scanned anyway, and visibly "zoomed out" back to ultrawide on a
+    // camera rebind. Force back to the primary sensor's natural 1.0x
+    // framing -- best-effort, since not every device necessarily supports
+    // exactly 1.0 (though any logical camera spanning both should).
+    unawaited(() async {
+      try {
+        await controller.setZoomLevel(1.0);
+      } catch (_) {}
+    }());
     // Best-effort: warms mobile_ocr's model cache so the first detection
     // cycle isn't silently stuck behind a first-run download with no
     // feedback. Ignored on failure -- detectTextRegions() below will just
@@ -886,6 +905,12 @@ class _OcrPageState extends State<OcrPage> {
           onScanFailure: (_) {},
           onControllerCreated: _onLiveCameraController,
           scanDelay: const Duration(milliseconds: 500),
+          // Defaults to true. The only thing in this widget that ever
+          // moves zoom away from the 1.0x forced in
+          // _onLiveCameraController -- serves no purpose for scanning
+          // text/codes, and left on it could pinch back down into the
+          // ultrawide range that fix works around.
+          allowPinchZoom: false,
           // ResolutionPreset.high (the unset default) measured via logcat
           // at 1280x720 on this device -- ~13x fewer pixels than a normal
           // photo (4096x3072), which directly starved post-freeze text

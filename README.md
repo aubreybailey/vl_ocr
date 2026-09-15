@@ -20,7 +20,8 @@ includes barcode/QR scanning
 ([`flutter_zxing`](https://pub.dev/packages/flutter_zxing), ZXing-cpp, no
 Google dependency) merged into the same screen — a toggle in the app bar
 switches between the static photo view and a live camera scanner, no
-separate route.
+separate route. The live scanner also draws boxes over detected text in
+real time (Lens-style), tap one to freeze and read it.
 
 ## Status
 
@@ -69,10 +70,32 @@ BoxFit.contain letterbox rect, the same transform Ente's own
 `TextOverlayWidget` uses); tapping one opens the same bottom sheet the
 live scanner uses. Coexists with `mobile_ocr`'s own text-selection UI
 underneath since the tap targets are only the small per-code rects, not a
-full-screen overlay. The still-open v0.2.0 milestone is specifically
-about a *streaming box overlay while the live camera is running*
-(drawing boxes over codes/text before you tap anything) — a separate,
-bigger piece of work than either of the above.
+full-screen overlay.
+
+**v0.2.0 milestone (live streaming text-box overlay): shipped, not yet
+tested on-device.** The live camera view now also draws amber boxes over
+detected text, alongside the existing teal barcode boxes -- the actual
+Lens live-preview trick. `mobile_ocr`'s `detectTextRegions()` is a
+detector-only call (no recognition, cheaper than the full pipeline) but
+it's a `MethodChannel` API that only accepts a file path -- no raw
+in-memory frame buffer support the way `flutter_zxing`'s synchronous FFI
+decode gets for barcodes. Hand-rolling a YUV->JPEG frame converter to feed
+it raw camera frames was the "proper" option but real engineering risk
+(color-space/orientation bugs) for a feature meant to ship in a handful of
+iterations, so instead: a `Timer.periodic` (every 1200ms, tunable
+constant) calls `CameraController.takePicture()` for a real
+hardware-encoded JPEG, then `detectTextRegions()` on that file -- the same
+file-based call `TextDetectorWidget` already relies on for full
+recognition. Tapping an amber box freezes on the exact frame that produced
+it (already a file on disk) and feeds it into the same full-recognition
+pipeline a picked/shared photo goes through -- no new recognition code,
+`detectTextRegions()` only ever says *where* text is, not what it says.
+Known, accepted tradeoff: `takePicture()` triggers Android's shutter
+sound each cycle (not disableable via public API in most locales), so
+live mode clicks audibly roughly once every 1.2s while scanning for text.
+If that's too annoying in practice, a future iteration could lengthen the
+interval or make it tap-to-scan instead of automatic -- left as an easy
+constant to change (`_textScanInterval`) rather than solved preemptively.
 
 First on-device test found text detection working well but the barcode
 overlay untappable. Root cause: `flutter_zxing`'s convenience
@@ -151,22 +174,13 @@ isn't on pub.dev yet either, hence the git dependency.
 
 ## Roadmap / ideas not yet started
 
-**v0.2.0 milestone: a working live camera + streaming text-box overlay**
-(see below) — the "big" remaining Lens-style feature.
-
-Other Google Lens-style features considered, roughly in order of how
-cheap/self-contained they'd be to add:
+The v0.2.0 milestone (live camera + streaming text-box overlay) is done
+-- see Status above. Remaining Google Lens-style features considered,
+roughly in order of how cheap/self-contained they'd be to add:
 
 - **Document scan + perspective crop** — corner detection + perspective
   transform before handing off to OCR; pairs naturally with the existing
   camera capture flow.
-- **Live camera + streaming text-box overlay** — the actual Lens
-  live-preview trick: run `mobile_ocr`'s *detection* stage only (not full
-  recognition, which is heavier) on a throttled camera frame loop via the
-  `camera` package, draw boxes with a `CustomPainter`, defer full
-  recognition until the user taps/freezes on a box. Bigger lift than the
-  above, but the pieces (detection API, overlay rendering) already exist
-  in this codebase in some form.
 - **General "what is this?" scene/object questions** — falls out of the
   Ask AI screen for free once its crash is fixed; same code path as OCR,
   just a different prompt. Not a separate feature to build.

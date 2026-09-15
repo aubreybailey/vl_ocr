@@ -73,6 +73,28 @@ class _OcrPageState extends State<OcrPage> {
   // second bottom sheet on top of one already showing a live-scanned code.
   bool _liveResultShowing = false;
 
+  // Live text-region detection, layered on top of the same live-camera view
+  // as barcode scanning. mobile_ocr's detectTextRegions() is a detector-only
+  // (no recognition) call, but it's a MethodChannel API that only accepts a
+  // file path -- no raw in-memory frame buffer support, unlike zxing's
+  // synchronous FFI decode used for the barcode side above. Rather than
+  // hand-rolling YUV->JPEG frame conversion (real engineering risk:
+  // color-space/orientation bugs, for a feature meant to ship in a handful
+  // of iterations) this uses CameraController.takePicture() on a timer to
+  // get real hardware-encoded JPEGs -- the same file-based call
+  // TextDetectorWidget already relies on for full recognition. Accepted
+  // tradeoff: each cycle triggers Android's shutter sound (not disableable
+  // via public API in most locales), so live mode clicks audibly roughly
+  // once per _textScanInterval while scanning for text. If that's
+  // unacceptably annoying in practice, a future iteration could lengthen
+  // the interval or make it tap-to-scan instead of automatic.
+  static const _textScanInterval = Duration(milliseconds: 1200);
+  Timer? _textScanTimer;
+  bool _textScanInFlight = false;
+  List<TextRegion> _liveTextRegions = const [];
+  Size? _liveTextRegionsImageSize;
+  String? _liveTextRegionsImagePath;
+
   @override
   void initState() {
     super.initState();
@@ -108,6 +130,7 @@ class _OcrPageState extends State<OcrPage> {
       _imagePath = path;
       _barcodes = const [];
       _liveMode = false;
+      _stopLiveTextScan();
     });
     _scanBarcodes(path);
   }
@@ -225,6 +248,91 @@ class _OcrPageState extends State<OcrPage> {
     _showBarcodeResult(code, onDismissed: () => _liveResultShowing = false);
   }
 
+  void _onLiveCameraController(CameraController? controller, Exception? _) {
+    _textScanTimer?.cancel();
+    if (controller == null) return;
+    // Best-effort: warms mobile_ocr's model cache so the first detection
+    // cycle isn't silently stuck behind a first-run download with no
+    // feedback. Ignored on failure -- detectTextRegions() below will just
+    // retry (and download if needed) on its own on a later cycle either way.
+    unawaited(() async {
+      try {
+        await MobileOcr().prepareModels();
+      } catch (_) {}
+    }());
+    _textScanTimer = Timer.periodic(
+      _textScanInterval,
+      (_) => _runTextScanCycle(controller),
+    );
+  }
+
+  Future<void> _runTextScanCycle(CameraController controller) async {
+    if (_textScanInFlight || !_liveMode || !mounted) return;
+    if (!controller.value.isInitialized) return;
+    _textScanInFlight = true;
+    try {
+      final xfile = await controller.takePicture();
+      if (!mounted || !_liveMode) return;
+      final result = await MobileOcr().detectTextRegions(
+        imagePath: xfile.path,
+      );
+      if (!mounted || !_liveMode) return;
+      setState(() {
+        _liveTextRegions = result.regions;
+        _liveTextRegionsImageSize = result.imageSize;
+        _liveTextRegionsImagePath = xfile.path;
+      });
+    } catch (_) {
+      // Best-effort, same spirit as _scanBarcodes: camera mid-teardown,
+      // model still downloading, or takePicture() conflicting with
+      // ReaderWidget's own concurrent startImageStream() barcode loop --
+      // skip this cycle and try again next tick rather than surfacing an
+      // error.
+    } finally {
+      _textScanInFlight = false;
+    }
+  }
+
+  void _stopLiveTextScan() {
+    _textScanTimer?.cancel();
+    _textScanTimer = null;
+    _liveTextRegions = const [];
+    _liveTextRegionsImageSize = null;
+    _liveTextRegionsImagePath = null;
+  }
+
+  /// Maps a detector-only text region's bounding box (in the source photo's
+  /// pixel space) to a screen [Rect] within [containerSize] -- same
+  /// BoxFit.contain letterbox math as [_barcodeScreenRect], just starting
+  /// from an already-axis-aligned [Rect] instead of four corner points.
+  Rect? _textRegionScreenRect(Rect box, Size imageSize, Size containerSize) {
+    if (imageSize.width <= 0 || imageSize.height <= 0) return null;
+    final fitted = applyBoxFit(BoxFit.contain, imageSize, containerSize);
+    final displaySize = fitted.destination;
+    final offsetX = (containerSize.width - displaySize.width) / 2;
+    final offsetY = (containerSize.height - displaySize.height) / 2;
+    final scaleX = displaySize.width / imageSize.width;
+    final scaleY = displaySize.height / imageSize.height;
+    const pad = 4.0;
+    return Rect.fromLTRB(
+      offsetX + box.left * scaleX - pad,
+      offsetY + box.top * scaleY - pad,
+      offsetX + box.right * scaleX + pad,
+      offsetY + box.bottom * scaleY + pad,
+    );
+  }
+
+  /// Tapping a live text-region box freezes on the frame that produced it --
+  /// already a real file on disk from takePicture() -- and feeds it into
+  /// the exact same pipeline a picked/shared photo goes through. No new
+  /// recognition code needed: detectTextRegions() only ever told us *where*
+  /// text is, never what it says.
+  void _freezeOnLiveTextRegion() {
+    final path = _liveTextRegionsImagePath;
+    if (path == null) return;
+    _setImagePath(path);
+  }
+
   void _showBarcodeResult(Code code, {VoidCallback? onDismissed}) {
     final text = code.text ?? '';
     final isUrl = _barcodeUrlPattern.hasMatch(text);
@@ -285,6 +393,7 @@ class _OcrPageState extends State<OcrPage> {
   void dispose() {
     _shareSub.cancel();
     _controller.dispose();
+    _textScanTimer?.cancel();
     super.dispose();
   }
 
@@ -312,6 +421,7 @@ class _OcrPageState extends State<OcrPage> {
     setState(() {
       _liveMode = !_liveMode;
       _liveResultShowing = false;
+      if (!_liveMode) _stopLiveTextScan();
     });
   }
 
@@ -465,11 +575,13 @@ class _OcrPageState extends State<OcrPage> {
   // loop, flash/gallery/switch-camera controls, no custom camera code
   // needed here either.
   Widget _buildLiveScanBody() {
+    final textImageSize = _liveTextRegionsImageSize;
     return Stack(
       children: [
         ReaderWidget(
           onScan: _onLiveScan,
           onScanFailure: (_) {},
+          onControllerCreated: _onLiveCameraController,
           scanDelay: const Duration(milliseconds: 500),
           resolution: ResolutionPreset.high,
           lensDirection: CameraLensDirection.back,
@@ -486,6 +598,44 @@ class _OcrPageState extends State<OcrPage> {
           galleryIcon: const Icon(Icons.photo_library),
           toggleCameraIcon: const Icon(Icons.switch_camera),
         ),
+        // Live text-region overlay (v0.2.0 milestone): mobile_ocr's
+        // detector-only call is throttled (see _textScanInterval) since,
+        // unlike zxing's free synchronous FFI decode above, it's a
+        // file-based MethodChannel call -- each cycle is a real
+        // takePicture() + detectTextRegions() round trip. Tapping a box
+        // freezes on the frame that produced it and hands off to the same
+        // full-recognition pipeline a picked/shared photo already uses.
+        if (_liveTextRegions.isNotEmpty && textImageSize != null)
+          LayoutBuilder(
+            builder: (context, constraints) => Stack(
+              children: [
+                for (final region in _liveTextRegions)
+                  if (_textRegionScreenRect(
+                        region.boundingBox,
+                        textImageSize,
+                        constraints.biggest,
+                      )
+                      case final rect?)
+                    Positioned.fromRect(
+                      rect: rect,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _freezeOnLiveTextRegion,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: Colors.amberAccent,
+                              width: 2,
+                            ),
+                            borderRadius: BorderRadius.circular(4),
+                            color: Colors.amber.withValues(alpha: 0.12),
+                          ),
+                        ),
+                      ),
+                    ),
+              ],
+            ),
+          ),
         // ReaderWidget auto-scans continuously (no capture button by
         // design) but gave zero indication of that on its own -- just a
         // live camera feed with a subtle corner-bracket target frame and
@@ -505,8 +655,8 @@ class _OcrPageState extends State<OcrPage> {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Text(
-                'Point at a barcode or QR code — it scans '
-                'automatically, no need to tap anything',
+                'Barcodes/QR scan automatically. Amber boxes are text — '
+                'tap one to read it.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white),
               ),

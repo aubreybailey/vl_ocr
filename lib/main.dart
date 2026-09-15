@@ -394,7 +394,19 @@ class _OcrPageState extends State<OcrPage> {
     }
     _textRecognitionInFlight = true;
     try {
-      final result = await MobileOcr().detectText(imagePath: path);
+      // includeAllConfidenceScores: true -- confirmed via mobile_ocr's own
+      // logcat tag (OnnxOcrDebug) that the default 0.8 confidence gate was
+      // silently rejecting most live-camera recognition attempts
+      // (bestRecognitionScore repeatedly 0.27-0.65 for a real, correctly
+      // detected region, retried every cycle for 50+ seconds with zero
+      // successes). A deliberate static gallery/share photo clears 0.8
+      // more easily than a handheld live capture with more motion blur and
+      // JPEG noise; this widens the gate to mobile_ocr's own documented
+      // floor of 0.5 rather than silently dropping recognizable text.
+      final result = await MobileOcr().detectText(
+        imagePath: path,
+        includeAllConfidenceScores: true,
+      );
       if (!mounted || _imagePath != null) return;
       // Each recognized block may be claimed by at most one tracked region --
       // without this, several tracked regions that overlap the same real

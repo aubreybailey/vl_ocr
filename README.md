@@ -259,12 +259,10 @@ individually -- but not each other enough to have been merged by the
 pass above -- were all independently finding that same line as their
 own best match and all caching the identical string. Fixed by adding the
 same claimed[] pattern to the recognition side. The separately-reported
-"takes a long time after startup to start recognizing" isn't yet
-diagnosed -- may be inherent ramp-up (a region needs to survive a few
-detection cycles before the ~3s recognition timer has a stable,
-unclaimed candidate to match against) rather than a regression from
-either fix above; revisit with real timing data if it's still slow after
-this fix lands, rather than guessing further. Not yet re-tested.
+"takes a long time after startup to start recognizing" turned out to
+already be resolved by one of the fixes above (confirmed by the user
+before the next build even shipped) -- not chased further since it's no
+longer reproducing.
 
 User also asked to remove `ReaderWidget`'s grey corner-bracket target
 box, since it visually collided with the amber/green text boxes and the
@@ -282,6 +280,42 @@ suggesting it. Set `cropPercent: 0` (`DecodeParams`' own doc comment:
 the box and actually extends live barcode scanning to the full frame to
 match text detection, rather than leaving an invisible restriction in
 place. Not yet re-tested.
+
+User then asked why recognition was slow and whether the system was
+overloaded. Checked rather than guessed: sampled CPU (`top -p <pid>`)
+across several detection/recognition cycles -- real spikes to
+450-490% (of 800% max across this device's 8 cores) while a cycle runs,
+dropping to ~110% between cycles -- and checked
+`dumpsys thermalservice` and `scaling_cur_freq` against
+`cpuinfo_max_freq`: all eight core temperature sensors reported
+`mStatus=0` (no throttling) at 38-43°C, and every core was still
+clocked at its maximum frequency, not reduced. So the hardware is
+working hard during a cycle but isn't overloaded or thermally
+throttled -- the actual cause of the delay was something else entirely,
+found in `mobile_ocr`'s own native logcat tag (`OnnxOcrDebug`): a
+detected region kept logging `Recognition produced no results...
+bestRecognitionScore=0.60` (also saw 0.27, 0.56, 0.28) every ~3s for
+50+ seconds straight, zero successes. Caveat on that specific capture:
+the phone wasn't actually pointed at real text at the time (caught
+after the fact), so those particular low scores may partly reflect the
+detector flagging something text-shaped that wasn't, rather than purely
+motion blur on real text -- the mechanism this fix addresses is still
+real and confirmed regardless (`detectText()`'s default confidence gate
+of 0.8, per its own doc comment, silently discards anything under it),
+but whether a live handheld capture of *actual* text clears 0.8 as
+consistently as a deliberate still photo does is genuinely untested,
+not just downplayed. Set `includeAllConfidenceScores: true`, widening
+the gate to
+`mobile_ocr`'s documented floor of 0.5 -- real tradeoff being accepted
+rather than solved further: some lower-confidence (0.5-0.8) recognitions
+may occasionally be a little off, but a usually-right live preview beats
+a usually-empty one, and tapping a box that's wrong or still unrecognized
+always falls back to the full accurate static-photo recognition anyway.
+Deliberately did not shorten `_textScanInterval`/`_textRecognitionInterval`
+to chase the same complaint -- the CPU data above says cycles are
+already substantial work per iteration, so shortening the interval would
+add contention/heat/battery cost without addressing the confirmed actual
+cause. Not yet re-tested.
 
 First on-device test found text detection working well but the barcode
 overlay untappable. Root cause: `flutter_zxing`'s convenience
